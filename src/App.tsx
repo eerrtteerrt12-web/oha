@@ -30,7 +30,11 @@ import {
 import SolutionChart, { SERIES_COLORS } from './components/SolutionChart'
 import Guide from './components/Guide'
 import { DEFAULT_PROJECT, EXAMPLES, type Project } from './models'
-import type { SolvePayload } from './engine'
+import {
+  classifyCondition,
+  type ConditionNorm,
+  type SolvePayload,
+} from './engine'
 
 const STORAGE_KEY = 'polymath-studio-project-v1'
 const colors = SERIES_COLORS
@@ -56,6 +60,9 @@ function isProject(value: unknown): value is Project {
     typeof p.source === 'string' &&
     p.source.length <= 30000 &&
     typeof p.sweepName === 'string' &&
+    (p.conditionNorm === undefined ||
+      p.conditionNorm === 'infinity' ||
+      p.conditionNorm === '2') &&
     Array.isArray(p.parameters) &&
     p.parameters.length <= 24 &&
     p.parameters.every(
@@ -118,6 +125,8 @@ export default function App() {
   const editorRef = useRef<HTMLTextAreaElement>(null)
   const examplesRef = useRef<HTMLDivElement>(null)
   const result = payload?.result
+  const conditionNorm = project.conditionNorm ?? 'infinity'
+  const sensitivity = result ? classifyCondition(result.condition) : null
   const sweepParam = project.parameters.find(
     (p) => p.name === project.sweepName,
   )
@@ -160,6 +169,7 @@ export default function App() {
       worker.current?.postMessage({
         id,
         source: project.source,
+        conditionNorm,
         parameters: Object.fromEntries(
           project.parameters.map((p) => [p.name, p.value]),
         ),
@@ -179,6 +189,7 @@ export default function App() {
     project.source,
     project.parameters,
     project.sweepName,
+    conditionNorm,
     revision,
     workerReady,
   ])
@@ -332,7 +343,7 @@ export default function App() {
   }
   function exportReport() {
     if (!result || pending || error) return
-    const body = `# ${project.title}\n\n${project.description}\n\n## 입력 수식\n\n\`\`\`text\n${project.source}\n\`\`\`\n\n## 파라미터\n\n${project.parameters.map((p) => `- ${p.name} = ${p.value}`).join('\n') || '없음'}\n\n## 해\n\n| 변수 | 값 |\n| --- | ---: |\n${result.variables.map((v, i) => `| ${v} | ${result.values[i].toPrecision(12)} |`).join('\n')}\n\n최대 절대 잔차: ${result.maxResidual.toExponential(5)}\n\n조건수 (∞-norm): ${result.condition.toPrecision(6)}\n\n계산 엔진: ${result.engine}\n\n${result.warnings.join('\n')}\n`
+    const body = `# ${project.title}\n\n${project.description}\n\n## 입력 수식\n\n\`\`\`text\n${project.source}\n\`\`\`\n\n## 파라미터\n\n${project.parameters.map((p) => `- ${p.name} = ${p.value}`).join('\n') || '없음'}\n\n## 해\n\n| 변수 | 값 |\n| --- | ---: |\n${result.variables.map((v, i) => `| ${v} | ${result.values[i].toPrecision(12)} |`).join('\n')}\n\n최대 절대 잔차: ${result.maxResidual.toExponential(5)}\n\n조건수 (${result.conditionNorm === '2' ? '2-norm · SVD' : '∞-norm'}): ${Number.isNaN(result.condition) ? '계산 불가' : result.condition.toPrecision(8)}\n\n민감도: ${classifyCondition(result.condition).label}\n\n참고 기준: κ < 10^4 안정, 10^4 ≤ κ < 10^8 민감, κ ≥ 10^8 매우 민감. 이 구분은 일반적인 참고 범위이며 입력 오차와 단위에 따라 해석해야 합니다.\n\n${result.conditionError || ''}\n\n계산 엔진: ${result.engine}\n\n${result.warnings.join('\n')}\n`
     downloadFile('polymath-report.md', body, 'text/markdown;charset=utf-8')
     setToast('계산 리포트를 내려받았습니다.')
   }
@@ -998,9 +1009,6 @@ export default function App() {
                                   <ArrowRight size={12} />
                                   {fmt(sweepParam.max)}
                                 </span>
-                                <span className="sample-count">
-                                  그래프 {payload?.sweep.length}개 지점
-                                </span>
                               </div>
                               <SolutionChart
                                 points={payload?.sweep || []}
@@ -1124,6 +1132,34 @@ export default function App() {
                             리포트 저장
                           </button>
                         </div>
+                        <div className="condition-controls">
+                          <div>
+                            <label htmlFor="condition-norm">
+                              조건수 계산 방식
+                            </label>
+                            <p>입력 오차에 대한 해의 민감도를 확인합니다.</p>
+                          </div>
+                          <div className="condition-select-wrap">
+                            <select
+                              id="condition-norm"
+                              aria-label="조건수 계산 방식"
+                              value={conditionNorm}
+                              onChange={(e) =>
+                                setProject((p) => ({
+                                  ...p,
+                                  conditionNorm: e.target
+                                    .value as ConditionNorm,
+                                }))
+                              }
+                            >
+                              <option value="infinity">
+                                ∞-norm · 행 합 기준
+                              </option>
+                              <option value="2">2-norm · SVD 기준</option>
+                            </select>
+                            <ChevronDown size={13} />
+                          </div>
+                        </div>
                         <div className="report-metrics">
                           <div>
                             <span>최대 절대 잔차</span>
@@ -1132,8 +1168,25 @@ export default function App() {
                             </strong>
                           </div>
                           <div>
-                            <span>조건수 · ∞-norm</span>
-                            <strong>{fmt(result.condition, 6)}</strong>
+                            <span>
+                              조건수 ·{' '}
+                              {result.conditionNorm === '2'
+                                ? '2-norm'
+                                : '∞-norm'}
+                            </span>
+                            <strong className="condition-value">
+                              {fmt(result.condition, 7)}
+                            </strong>
+                            <span
+                              className="condition-badge"
+                              data-level={sensitivity?.level}
+                              role="status"
+                              aria-live="polite"
+                              aria-busy={pending}
+                            >
+                              <i />
+                              {sensitivity?.label}
+                            </span>
                           </div>
                           <div>
                             <span>계산 시간</span>
@@ -1142,6 +1195,58 @@ export default function App() {
                               <small> ms</small>
                             </strong>
                           </div>
+                        </div>
+                        <div
+                          className="condition-explanation"
+                          data-level={sensitivity?.level}
+                        >
+                          <p>
+                            {result.conditionError || sensitivity?.description}
+                          </p>
+                          <div
+                            className="condition-thresholds"
+                            aria-label="조건수 민감도 참고 범위"
+                          >
+                            <span>
+                              <i className="condition-dot stable" />
+                              <b>안정</b> κ &lt; 10⁴
+                            </span>
+                            <span>
+                              <i className="condition-dot sensitive" />
+                              <b>민감</b> 10⁴ ≤ κ &lt; 10⁸
+                            </span>
+                            <span>
+                              <i className="condition-dot very-sensitive" />
+                              <b>매우 민감</b> κ ≥ 10⁸
+                            </span>
+                          </div>
+                          <p className="condition-caveat">
+                            위 범위는 참고 기준입니다. 실제 신뢰도는 측정 오차와
+                            단위·스케일에 따라 달라지며, 작은 잔차만으로 해의
+                            정확도를 보장하지는 않습니다.
+                          </p>
+                          <details className="condition-guide">
+                            <summary>
+                              계산 방식의 차이 알아보기
+                              <ChevronDown size={12} />
+                            </summary>
+                            <p>
+                              <b>∞-norm</b>은 A와 A⁻¹의 최대 절댓값 행 합을
+                              곱합니다. <b>2-norm</b>은 직접 SVD로 구한
+                              최대·최소 특이값의 비율 σmax / σmin입니다.
+                            </p>
+                            <p>
+                              두 방식은 서로 다른 norm으로 민감도를 측정하므로
+                              값이 달라질 수 있습니다. 2-norm 선택이 해 자체의
+                              계산 정밀도를 높이는 것은 아닙니다.
+                            </p>
+                            <p>
+                              조건수는 수식에서 추출한 계수 행렬 A를 기준으로
+                              계산합니다. 식이나 변수의 단위를 바꾸면 값이
+                              달라질 수 있습니다. 계산 방식 선택은 진단에
+                              적용되며, 해를 구하는 솔버는 동일합니다.
+                            </p>
+                          </details>
                         </div>
                         <h4>01 / 입력 모델</h4>
                         <pre>{project.source}</pre>

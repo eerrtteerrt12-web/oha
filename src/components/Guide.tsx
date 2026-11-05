@@ -145,6 +145,28 @@ export default function Guide({ onClose }: { onClose: () => void }) {
             </div>
           </section>
 
+          <section className="guide-section">
+            <span className="guide-step">04</span>
+            <div>
+              <h3>조건수로 해의 민감도를 살펴보세요</h3>
+              <p>
+                해석 리포트에서 ∞-norm 또는 2-norm(SVD)을 선택할 수 있습니다.
+                조건수가 클수록 입력의 작은 오차가 해에 크게 영향을 줄 수
+                있습니다.
+              </p>
+              <p className="guide-small">
+                초록 ‘안정’은 10⁴ 미만, 노랑 ‘민감’은 10⁴ 이상~10⁸ 미만, 주황
+                ‘매우 민감’은 10⁸ 이상입니다. 참고 범위이므로 측정 오차와 단위도
+                함께 확인하세요.
+              </p>
+              <p className="guide-small">
+                2-norm은 다른 기준으로 민감도를 측정하는 도구이며, 선택한다고 해
+                자체의 정밀도가 높아지는 것은 아닙니다. 자세한 계산 방식은
+                리포트에서 확인할 수 있습니다.
+              </p>
+            </div>
+          </section>
+
           <div className="guide-note">
             <Lightbulb size={19} />
             <div>

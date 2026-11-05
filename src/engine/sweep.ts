@@ -2,6 +2,7 @@ import {
   ModelError,
   type SolvePayload,
   type SolveResult,
+  type SolverOptions,
   type SweepPoint,
 } from './index'
 
@@ -100,6 +101,7 @@ export function parameterValues(
 type Solver = (
   source: string,
   parameters: Record<string, number>,
+  options?: SolverOptions,
 ) => SolveResult
 type Sweeps = Pick<
   SolvePayload,
@@ -130,7 +132,11 @@ export function computeSweeps(
     try {
       point = {
         parameter,
-        values: solve(source, { ...parameters, [name]: parameter }).values,
+        values: solve(
+          source,
+          { ...parameters, [name]: parameter },
+          { computeCondition: false },
+        ).values,
       }
     } catch (error) {
       point = {

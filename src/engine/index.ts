@@ -1,3 +1,16 @@
+import { conditionNumber, type ConditionNorm } from './conditioning'
+export {
+  classifyCondition,
+  CONDITION_THRESHOLDS,
+  conditionNumber,
+} from './conditioning'
+export type { ConditionNorm, ConditionAssessment } from './conditioning'
+
+export type SolverOptions = {
+  conditionNorm?: ConditionNorm
+  computeCondition?: boolean
+}
+
 export type Parameter = {
   id: string
   name: string
@@ -15,6 +28,8 @@ export type SolveResult = {
   residuals: number[]
   maxResidual: number
   condition: number
+  conditionNorm: ConditionNorm
+  conditionError?: string
   engine: 'wasm' | 'javascript'
   durationMs: number
   warnings: string[]
@@ -378,52 +393,15 @@ function solveJavascript(augmented: number[][]): number[] {
   }
   return values
 }
-/** Infinity-norm condition number, evaluated with a pivoted Gauss-Jordan inverse. */
-function conditionNumber(matrix: number[][]): number {
-  // A global scalar does not change a condition number, but prevents a well-
-  // conditioned matrix at 1e-320 or 1e308 from overflowing its inverse or norm.
-  const magnitude = Math.max(...matrix.flat().map(Math.abs)) || 1
-  const normalized = matrix.map((row) => row.map((value) => value / magnitude))
-  const n = matrix.length,
-    norm = Math.max(
-      ...normalized.map((row) =>
-        row.reduce((sum, value) => sum + Math.abs(value), 0),
-      ),
-    )
-  const a = normalized.map((row, i) => [
-    ...row,
-    ...Array.from({ length: n }, (_, j) => (i === j ? 1 : 0)),
-  ])
-  for (let k = 0; k < n; k++) {
-    let pivot = k
-    for (let row = k + 1; row < n; row++)
-      if (Math.abs(a[row][k]) > Math.abs(a[pivot][k])) pivot = row
-    if (a[pivot][k] === 0) return Infinity
-    ;[a[k], a[pivot]] = [a[pivot], a[k]]
-    const denominator = a[k][k]
-    for (let col = 0; col < 2 * n; col++) a[k][col] /= denominator
-    for (let row = 0; row < n; row++)
-      if (row !== k) {
-        const factor = a[row][k]
-        for (let col = 0; col < 2 * n; col++) a[row][col] -= factor * a[k][col]
-      }
-  }
-  const condition =
-    norm *
-    Math.max(
-      ...a.map((row) =>
-        row.slice(n).reduce((sum, value) => sum + Math.abs(value), 0),
-      ),
-    )
-  // An inverse outside Float64 range means the original system is extremely
-  // ill-conditioned; never turn that diagnostic into an unflagged NaN.
-  return Number.isFinite(condition) ? Math.max(1, condition) : Infinity
-}
 type WasmExports = { memory: WebAssembly.Memory; solve: (n: number) => number }
 export async function createSolver(
   wasmBinary?: BufferSource,
 ): Promise<
-  (source: string, parameters: Record<string, number>) => SolveResult
+  (
+    source: string,
+    parameters: Record<string, number>,
+    options?: SolverOptions,
+  ) => SolveResult
 > {
   let wasm: WasmExports | null = null
   try {
@@ -437,8 +415,11 @@ export async function createSolver(
   } catch {
     /* Offline browser constraints can use the same pivoted algorithm in JavaScript. */
   }
-  return (source, parameters) => {
+  return (source, parameters, options = {}) => {
     const start = performance.now()
+    const conditionNorm = options.conditionNorm ?? 'infinity'
+    if (conditionNorm !== 'infinity' && conditionNorm !== '2')
+      throw new ModelError('조건수 계산 방법을 확인해 주세요.')
     const { variables, matrix, rhs } = assemble(source, parameters)
     const augmented = normalize(matrix, rhs)
     let values: number[]
@@ -471,13 +452,25 @@ export async function createSolver(
       return sum * magnitude * valueMagnitude
     })
     const maxResidual = Math.max(...residuals.map(Math.abs))
-    const condition = conditionNumber(matrix)
+    // Sweeps need solution values only; avoid thousands of unused SVD/inverse
+    // diagnostics. Their NaN condition is internal and never shown as a result.
+    let condition = NaN
+    let conditionError: string | undefined
+    if (options.computeCondition !== false) {
+      try {
+        condition = conditionNumber(matrix, conditionNorm)
+      } catch {
+        conditionError =
+          '선택한 방법으로 조건수를 계산하지 못했습니다. 해와 잔차를 별도로 확인하거나 다른 norm을 선택해 주세요.'
+      }
+    }
     const warnings: string[] = []
+    if (conditionError) warnings.push(conditionError)
     if (!wasm)
       warnings.push(
         'WebAssembly를 사용할 수 없어 JavaScript 솔버로 계산했습니다.',
       )
-    if (condition > 1e8)
+    if (condition >= 1e8)
       warnings.push(
         '조건수가 큽니다. 입력값의 작은 변화가 해에 큰 영향을 줄 수 있습니다.',
       )
@@ -494,6 +487,8 @@ export async function createSolver(
       residuals,
       maxResidual,
       condition,
+      conditionNorm,
+      ...(conditionError ? { conditionError } : {}),
       engine: wasm ? 'wasm' : 'javascript',
       durationMs: performance.now() - start,
       warnings,

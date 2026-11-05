@@ -1150,11 +1150,6 @@ h2 {
   font-family: Consolas, monospace;
   color: #a0ad92;
 }
-.sample-count {
-  margin-left: auto;
-  color: #a7b199;
-  font-size: 9px;
-}
 .chart-footnote {
   font-size: 9px;
   color: #a4af99;
@@ -2649,5 +2644,213 @@ h2 {
   }
   .matrix-details > *:not(summary) {
     display: block !important;
+  }
+}
+
+.condition-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 0;
+  margin-bottom: 8px;
+  border-top: 1px solid #e9eee3;
+}
+.condition-controls label {
+  font-size: 11px;
+  font-weight: 550;
+  color: #64825b;
+}
+.condition-controls p {
+  font-size: 9px;
+  color: #94a286;
+  margin-top: 5px;
+  line-height: 1.7;
+}
+.condition-select-wrap {
+  position: relative;
+  min-width: 0;
+}
+.condition-select-wrap select {
+  appearance: none;
+  border: 1px solid #dce6d3;
+  border-radius: 5px;
+  background: #fafcf6;
+  color: #607e54;
+  font-size: 11px;
+  padding: 9px 30px 9px 10px;
+  width: 100%;
+  cursor: pointer;
+}
+.condition-select-wrap > svg {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: #97aa86;
+}
+.report-metrics .condition-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: inherit;
+  font-size: 9px;
+  padding: 3px 5px;
+  border-radius: 4px;
+  margin-top: 9px;
+  border: 1px solid;
+  line-height: 1.3;
+}
+.condition-badge i,
+.condition-dot {
+  height: 5px;
+  width: 5px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.report-metrics .condition-badge[data-level='stable'] {
+  background: #edf5e7;
+  color: #64814e;
+  border-color: #dce9d1;
+}
+.condition-badge[data-level='stable'] i,
+.condition-dot.stable {
+  background: #7ca65d;
+}
+.report-metrics .condition-badge[data-level='sensitive'] {
+  background: #fff6df;
+  color: #a17a25;
+  border-color: #ebdcac;
+}
+.condition-badge[data-level='sensitive'] i,
+.condition-dot.sensitive {
+  background: #c6a047;
+}
+.report-metrics .condition-badge[data-level='very-sensitive'] {
+  background: #fff0e9;
+  color: #b56d4c;
+  border-color: #efd7c9;
+}
+.condition-badge[data-level='very-sensitive'] i,
+.condition-dot.very-sensitive {
+  background: #d38a65;
+}
+.report-metrics .condition-badge[data-level='unavailable'] {
+  background: #f2f3ef;
+  color: #8b9385;
+  border-color: #e1e5da;
+}
+.condition-badge[data-level='unavailable'] i {
+  background: #a7af9d;
+}
+.condition-explanation {
+  margin-top: -12px;
+  border: 1px solid #e4ebdb;
+  background: #fafcf6;
+  border-radius: 6px;
+  padding: 13px 14px;
+  color: #7c916e;
+  font-size: 10px;
+  line-height: 1.9;
+}
+.condition-explanation[data-level='sensitive'] {
+  border-color: #ecdfb6;
+  background: #fffcf3;
+}
+.condition-explanation[data-level='very-sensitive'] {
+  border-color: #eed9cc;
+  background: #fff9f5;
+}
+.condition-thresholds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 10px 0 9px;
+  font-size: 9px;
+}
+.condition-thresholds > span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  color: #87977c;
+}
+.condition-thresholds b {
+  font-weight: 550;
+  color: #718564;
+}
+.condition-caveat {
+  font-size: 9px;
+  color: #9ba78d;
+  line-height: 1.8;
+}
+.condition-guide {
+  margin-top: 11px;
+  padding-top: 8px;
+  border-top: 1px solid #e5ebdc;
+}
+.condition-guide summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  color: #7c946c;
+  font-size: 9px;
+  list-style: none;
+}
+.condition-guide summary::-webkit-details-marker {
+  display: none;
+}
+.condition-guide summary:focus-visible {
+  outline: 2px solid #b1c7a0;
+  outline-offset: 3px;
+}
+.condition-guide[open] summary > svg {
+  transform: rotate(180deg);
+}
+.condition-guide p {
+  font-size: 9px;
+  line-height: 1.9;
+  margin-top: 9px;
+  color: #8d9d7f;
+}
+.condition-guide b {
+  font-weight: 550;
+  color: #718962;
+}
+.is-computing .condition-value,
+.is-computing .condition-badge,
+.is-computing .condition-explanation {
+  opacity: 0.5;
+}
+@media (max-width: 760px) {
+  .condition-controls {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .condition-controls label {
+    font-size: 11px;
+  }
+  .condition-controls p {
+    font-size: 9px;
+  }
+  .condition-select-wrap select {
+    font-size: 11px;
+  }
+  .condition-thresholds {
+    flex-direction: column;
+    gap: 4px;
+  }
+  .report-metrics .condition-badge {
+    font-size: 8px;
+    padding: 3px;
+  }
+  .condition-explanation {
+    padding: 11px;
+    font-size: 10px;
   }
 }

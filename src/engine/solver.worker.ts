@@ -1,18 +1,24 @@
 /// <reference lib="webworker" />
-import { createSolver, ModelError, type SolvePayload } from './index'
+import {
+  createSolver,
+  ModelError,
+  type SolvePayload,
+  type ConditionNorm,
+} from './index'
 import { computeSweeps, type SweepSettings } from './sweep'
 type Request = {
   id: number
   source: string
   parameters: Record<string, number>
   sweep: SweepSettings | null
+  conditionNorm?: ConditionNorm
 }
 const ready = createSolver()
 self.onmessage = async (event: MessageEvent<Request>) => {
-  const { id, source, parameters, sweep } = event.data
+  const { id, source, parameters, sweep, conditionNorm } = event.data
   try {
     const solve = await ready
-    const result = solve(source, parameters)
+    const result = solve(source, parameters, { conditionNorm })
     const payload: SolvePayload = {
       result,
       ...computeSweeps(solve, source, parameters, sweep),

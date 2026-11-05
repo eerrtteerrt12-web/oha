@@ -1,3 +1,5 @@
+import type { ConditionNorm } from './engine'
+
 export type Project = {
   title: string
   description: string
@@ -11,6 +13,7 @@ export type Project = {
     step: number
   }>
   sweepName: string
+  conditionNorm?: ConditionNorm
 }
 
 export const DEFAULT_PROJECT: Project = {
@@ -25,6 +28,7 @@ export const DEFAULT_PROJECT: Project = {
     { id: 'c_T', name: 'c_T', value: 0.5, min: 0.2, max: 0.8, step: 0.01 },
   ],
   sweepName: 'c_T',
+  conditionNorm: 'infinity',
 }
 
 export const EXAMPLES: Array<{

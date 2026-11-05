@@ -208,7 +208,7 @@ test('project import restores a custom model and rejects malformed data', async 
     mimeType: 'application/json',
     buffer: Buffer.from('{"title": false}'),
   })
-  await expect(page.getByRole('status')).toContainText(
+  await expect(page.locator('.toast[role="status"]')).toContainText(
     '올바른 Polymath 프로젝트 JSON 파일이 아닙니다',
   )
   await expect(page.locator('.solution-value strong')).toHaveText(['2'])
@@ -279,7 +279,7 @@ test('dataset uses the configured interval while the graph keeps its own resolut
   await expect(rows.nth(1).locator('td').first()).toHaveText('0.21')
   await expect(rows.nth(2).locator('td').first()).toHaveText('0.22')
   await expect(rows.last().locator('td')).toHaveText(['0.8', '0', '100'])
-  await expect(page.locator('.sample-count')).toContainText('81')
+  await expect(page.locator('.sample-count')).toHaveCount(0)
   await page
     .getByRole('button', { name: '파라미터 범위 설정', exact: true })
     .click()
@@ -291,7 +291,7 @@ test('dataset uses the configured interval while the graph keeps its own resolut
   await expect(rows.nth(1).locator('td').first()).toHaveText('0.25')
   await expect(rows.last().locator('td').first()).toHaveText('0.8')
   await ready(page)
-  await expect(page.locator('.sample-count')).toContainText('81')
+  await expect(page.locator('.sample-count')).toHaveCount(0)
   const download = page.waitForEvent('download')
   await page.getByRole('button', { name: 'CSV', exact: true }).click()
   const file = await download
@@ -374,4 +374,157 @@ test('too many dataset rows are explained without changing interval or breaking 
     page.getByRole('slider', { name: 'p 슬라이더' }),
   ).toHaveAttribute('step', '0.00001')
   await expect(page.locator('.sweep-table tbody tr')).toHaveCount(0)
+})
+
+async function importConditionModel(
+  page: Page,
+  source: string,
+  conditionNorm?: 'infinity' | '2',
+) {
+  await page.locator('input[type=file]').setInputFiles({
+    name: 'condition-model.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        title: '조건수 확인 모델',
+        description: '선택한 norm의 조건수와 민감도를 검증합니다.',
+        source,
+        parameters: [],
+        sweepName: '',
+        ...(conditionNorm ? { conditionNorm } : {}),
+      }),
+    ),
+  })
+  await expect(page.getByRole('textbox', { name: '모델 이름' })).toHaveValue(
+    '조건수 확인 모델',
+  )
+  await expect(page.getByRole('textbox', { name: '방정식 입력' })).toHaveValue(
+    source,
+  )
+  await ready(page)
+}
+
+async function conditionValue(page: Page) {
+  return Number(
+    (await page.locator('.report-content .condition-value').innerText())
+      .replace(/,/g, '')
+      .trim(),
+  )
+}
+
+test('selected 2-norm uses singular values, preserves solutions and records the chosen definition', async ({
+  page,
+}) => {
+  await importConditionModel(page, 'x + y = 2\ny = 1')
+  await page.getByRole('button', { name: '해석 리포트' }).click()
+  const selector = page.getByRole('combobox', { name: '조건수 계산 방식' })
+  await expect(selector).toHaveValue('infinity')
+  await expect.poll(() => conditionValue(page)).toBe(4)
+  await expect(page.locator('.solution-value strong')).toHaveText(['1', '1'])
+  await selector.selectOption('2')
+  await expect
+    .poll(() => conditionValue(page))
+    .toBeCloseTo((3 + Math.sqrt(5)) / 2, 4)
+  await ready(page)
+  await expect(page.locator('.solution-value strong')).toHaveText(['1', '1'])
+  await expect(
+    page.locator('.report-content .condition-badge'),
+  ).toHaveAttribute('data-level', 'stable')
+  await expect(page.locator('.report-content .condition-badge')).toContainText(
+    '안정',
+  )
+  const reportEvent = page.waitForEvent('download')
+  await page.getByRole('button', { name: '리포트 저장' }).click()
+  const report = await reportEvent
+  const reportText = await readFile((await report.path())!, 'utf8')
+  expect(reportText).toContain('2-norm')
+  expect(reportText).toContain('안정')
+  const projectEvent = page.waitForEvent('download')
+  await page.getByRole('button', { name: '프로젝트 저장' }).click()
+  const file = await projectEvent
+  const savedProjectText = await readFile((await file.path())!, 'utf8')
+  expect(JSON.parse(savedProjectText).conditionNorm).toBe('2')
+  await page.reload()
+  await ready(page)
+  await page.getByRole('button', { name: '해석 리포트' }).click()
+  await expect(selector).toHaveValue('2')
+  await expect
+    .poll(() => conditionValue(page))
+    .toBeCloseTo((3 + Math.sqrt(5)) / 2, 4)
+  await selector.selectOption('infinity')
+  await expect.poll(() => conditionValue(page)).toBe(4)
+  await page.locator('input[type=file]').setInputFiles({
+    name: 'saved-condition.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(savedProjectText),
+  })
+  await expect(selector).toHaveValue('2')
+  await expect
+    .poll(() => conditionValue(page))
+    .toBeCloseTo((3 + Math.sqrt(5)) / 2, 4)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(selector).toBeVisible()
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth,
+    ),
+  ).toBe(false)
+})
+
+test('condition sensitivity labels distinguish stable, sensitive and very sensitive matrices', async ({
+  page,
+}) => {
+  await importConditionModel(page, 'x = 1\n0.001*y = 0.001')
+  await page.getByRole('button', { name: '해석 리포트' }).click()
+  const badge = page.locator('.report-content .condition-badge')
+  await expect(badge).toHaveAttribute('data-level', 'stable')
+  await expect.poll(() => conditionValue(page)).toBe(1000)
+  const editor = page.getByRole('textbox', { name: '방정식 입력' })
+  await editor.fill('x = 1\n0.00001*y = 0.00001')
+  await expect(badge).toHaveAttribute('data-level', 'sensitive')
+  await expect(badge).toContainText('민감')
+  await expect.poll(() => conditionValue(page)).toBe(100000)
+  await editor.fill('x = 1\n0.000000001*y = 0.000000001')
+  await expect(badge).toHaveAttribute('data-level', 'very-sensitive')
+  await expect(badge).toContainText('매우 민감')
+  await expect.poll(() => conditionValue(page)).toBe(1000000000)
+  await page
+    .getByRole('combobox', { name: '조건수 계산 방식' })
+    .selectOption('2')
+  await ready(page)
+  await expect(badge).toHaveAttribute('data-level', 'very-sensitive')
+  await expect(page.locator('.solution-value strong')).toHaveText(['1', '1'])
+})
+
+test('legacy project files default to infinity norm and unsupported norm settings are rejected', async ({
+  page,
+}) => {
+  await page.getByRole('button', { name: '해석 리포트' }).click()
+  const selector = page.getByRole('combobox', { name: '조건수 계산 방식' })
+  await selector.selectOption('2')
+  await ready(page)
+  await importConditionModel(page, 'x + y = 2\ny = 1')
+  await expect(selector).toHaveValue('infinity')
+  await expect.poll(() => conditionValue(page)).toBe(4)
+  await page.locator('input[type=file]').setInputFiles({
+    name: 'bad-condition.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        title: '잘못된 조건수 모델',
+        description: 'invalid norm',
+        source: 'x = 3',
+        parameters: [],
+        sweepName: '',
+        conditionNorm: 'unsupported',
+      }),
+    ),
+  })
+  await expect(page.locator('.toast[role="status"]')).toContainText(
+    '올바른 Polymath 프로젝트 JSON 파일이 아닙니다',
+  )
+  await expect(page.getByRole('textbox', { name: '모델 이름' })).toHaveValue(
+    '조건수 확인 모델',
+  )
+  await expect(selector).toHaveValue('infinity')
 })
