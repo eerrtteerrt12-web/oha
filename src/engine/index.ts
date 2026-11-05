@@ -27,6 +27,8 @@ export type SweepPoint = {
 export type SolvePayload = {
   result: SolveResult
   sweep: SweepPoint[]
+  dataset: SweepPoint[]
+  datasetError?: string
   sweepName: string
 }
 export class ModelError extends Error {

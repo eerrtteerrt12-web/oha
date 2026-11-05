@@ -9,8 +9,11 @@ import {
 } from 'react'
 import './SolutionChart.css'
 
+type ChartPoint = { parameter: number; values: number[] | null; error?: string }
+
 export interface SolutionChartProps {
-  points: { parameter: number; values: number[] | null; error?: string }[]
+  points: ChartPoint[]
+  selectionPoints?: ChartPoint[]
   variables: string[]
   parameterName: string
   currentParameter: number
@@ -110,6 +113,7 @@ function niceDomain(values: number[]): [number, number, number[]] {
 
 export default function SolutionChart({
   points,
+  selectionPoints,
   variables,
   parameterName,
   currentParameter,
@@ -124,6 +128,9 @@ export default function SolutionChart({
   const containerRef = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(MAX_WIDTH)
   const innerWidth = width - PLOT.left - PLOT.right
+  // Plot resolution is independent of the user-defined dataset interval.
+  // Exploration uses dataset rows so graph and table share exact solve points.
+  const interactivePoints = selectionPoints?.length ? selectionPoints : points
 
   useEffect(() => {
     const container = containerRef.current
@@ -184,7 +191,7 @@ export default function SolutionChart({
     if (!chart) return -1
     let nearestIndex = -1
     let distance = Infinity
-    points.forEach((point, index) => {
+    interactivePoints.forEach((point, index) => {
       const nextDistance = Math.abs(
         fraction(point.parameter, chart.minX, chart.maxX) -
           fraction(value, chart.minX, chart.maxX),
@@ -200,10 +207,10 @@ export default function SolutionChart({
   const activeIndex =
     selectedIndex !== null &&
     selectedIndex >= 0 &&
-    selectedIndex < points.length
+    selectedIndex < interactivePoints.length
       ? selectedIndex
       : nearest(currentParameter)
-  const activePoint = points[activeIndex]
+  const activePoint = interactivePoints[activeIndex]
   const x = (value: number) =>
     PLOT.left + fraction(value, chart!.minX, chart!.maxX) * innerWidth
   const y = (value: number) =>
@@ -227,14 +234,14 @@ export default function SolutionChart({
   }
 
   function handleKey(event: KeyboardEvent<SVGSVGElement>) {
-    if (!points.length) return
+    if (!interactivePoints.length) return
     const current = activeIndex < 0 ? 0 : activeIndex
     let index = current
     if (event.key === 'ArrowLeft') index = Math.max(0, current - 1)
     else if (event.key === 'ArrowRight')
-      index = Math.min(points.length - 1, current + 1)
+      index = Math.min(interactivePoints.length - 1, current + 1)
     else if (event.key === 'Home') index = 0
-    else if (event.key === 'End') index = points.length - 1
+    else if (event.key === 'End') index = interactivePoints.length - 1
     else if (event.key === 'Escape') {
       onSelectIndex(null)
       return
@@ -456,7 +463,7 @@ export default function SolutionChart({
           >
             <div className="sc-tooltip-heading">
               <span>{parameterName}</span>
-              <strong>{formatNumber(activePoint.parameter)}</strong>
+              <strong>{String(activePoint.parameter)}</strong>
             </div>
             {activePoint.values ? (
               visible.map(({ name, index }) => (
@@ -490,7 +497,7 @@ export default function SolutionChart({
           {selectedIndex !== null ? '탐색 지점' : '현재 설정'}
           <strong>
             {activePoint
-              ? formatNumber(
+              ? String(
                   selectedIndex !== null
                     ? activePoint.parameter
                     : currentParameter,
@@ -501,7 +508,7 @@ export default function SolutionChart({
       </div>
       <span className="sc-sr-only" aria-live="polite">
         {selectedIndex !== null && activePoint
-          ? `${parameterName}: ${formatNumber(activePoint.parameter)}, ${variables.map((name, index) => `${name}: ${activePoint.values ? formatNumber(activePoint.values[index]) : '해 없음'}`).join(', ')}`
+          ? `${parameterName}: ${String(activePoint.parameter)}, ${variables.map((name, index) => `${name}: ${activePoint.values ? formatNumber(activePoint.values[index]) : '해 없음'}`).join(', ')}`
           : ''}
       </span>
     </div>

@@ -75,6 +75,10 @@ test('graph exploration and legend are connected to data table', async ({
   await expect(
     page.locator('.sweep-table tr[aria-selected=true] td'),
   ).toHaveText(['0.2', '100', '0'])
+  await chart.press('ArrowRight')
+  await expect(
+    page.locator('.sweep-table tr[aria-selected=true] td').first(),
+  ).toHaveText('0.21')
   await chart.press('End')
   await expect(
     page.locator('.sweep-table tr[aria-selected=true] td'),
@@ -88,7 +92,7 @@ test('graph exploration and legend are connected to data table', async ({
   await expect(page.locator('.sc-tooltip-heading strong')).toHaveText('0.35')
   await tablePoint.focus()
   await tablePoint.press('ArrowDown')
-  await expect(page.locator('.sc-tooltip-heading strong')).toHaveText('0.3575')
+  await expect(page.locator('.sc-tooltip-heading strong')).toHaveText('0.36')
   await page.getByRole('button', { name: 'x 곡선 표시' }).click()
   await expect(
     page.getByRole('button', { name: 'x 곡선 표시' }),
@@ -96,18 +100,24 @@ test('graph exploration and legend are connected to data table', async ({
   await expect(page.locator('.sc-curve')).toHaveCount(1)
 })
 
-test('matrix, report and exports reflect current results', async ({ page }) => {
-  await page.getByRole('button', { name: '행렬 보기' }).click()
-  await expect(page.locator('.matrix-equation')).toContainText('100')
+test('advanced matrix report and exports reflect current results', async ({
+  page,
+}) => {
+  await expect(page.getByRole('button', { name: '행렬 보기' })).toHaveCount(0)
+  await expect(page.locator('.matrix-equation')).toHaveCount(0)
   const csv = page.waitForEvent('download')
   await page.getByRole('button', { name: 'CSV', exact: true }).click()
   const csvDownload = await csv
   expect(csvDownload.suggestedFilename()).toBe('polymath-data.csv')
   const csvText = await readFile((await csvDownload.path())!, 'utf8')
   expect(csvText.replace(/^\uFEFF/, '').split('\n')[0]).toBe('c_T,x,y')
-  expect(csvText.trim().split('\n')).toHaveLength(82)
+  expect(csvText.trim().split('\n')).toHaveLength(62)
   await page.getByRole('button', { name: '해석 리포트' }).click()
   await expect(page.locator('.report-metrics')).toContainText('최대 절대 잔차')
+  await expect(page.locator('.matrix-equation')).not.toBeVisible()
+  await page.getByText('행렬·수치 검증 자세히 보기', { exact: true }).click()
+  await expect(page.locator('.matrix-equation')).toBeVisible()
+  await expect(page.locator('.matrix-equation')).toContainText('100')
   const report = page.waitForEvent('download')
   await page.getByRole('button', { name: '리포트 저장' }).click()
   const reportDownload = await report
@@ -258,4 +268,110 @@ test('dependent and inconsistent systems provide distinct diagnostics', async ({
   await editor.fill('x + y = 4\nx - y = 2')
   await ready(page)
   await expect(page.locator('.solution-value strong')).toHaveText(['3', '1'])
+})
+
+test('dataset uses the configured interval while the graph keeps its own resolution', async ({
+  page,
+}) => {
+  const rows = page.locator('.sweep-table tbody tr')
+  await expect(rows).toHaveCount(61)
+  await expect(rows.nth(0).locator('td')).toHaveText(['0.2', '100', '0'])
+  await expect(rows.nth(1).locator('td').first()).toHaveText('0.21')
+  await expect(rows.nth(2).locator('td').first()).toHaveText('0.22')
+  await expect(rows.last().locator('td')).toHaveText(['0.8', '0', '100'])
+  await expect(page.locator('.sample-count')).toContainText('81')
+  await page
+    .getByRole('button', { name: '파라미터 범위 설정', exact: true })
+    .click()
+  await page
+    .getByRole('spinbutton', { name: 'c_T 간격', exact: true })
+    .fill('0.05')
+  await page.getByRole('button', { name: 'c_T 범위 적용', exact: true }).click()
+  await expect(rows).toHaveCount(13)
+  await expect(rows.nth(1).locator('td').first()).toHaveText('0.25')
+  await expect(rows.last().locator('td').first()).toHaveText('0.8')
+  await ready(page)
+  await expect(page.locator('.sample-count')).toContainText('81')
+  const download = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'CSV', exact: true }).click()
+  const file = await download
+  const csv = await readFile((await file.path())!, 'utf8')
+  const lines = csv
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .split('\n')
+  expect(lines).toHaveLength(14)
+  const values = lines.slice(1).map((line) => Number(line.split(',')[0]))
+  expect(values).toEqual([
+    0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8,
+  ])
+})
+
+async function importStepModel(page: Page, step: number) {
+  await page.locator('input[type=file]').setInputFiles({
+    name: 'step-model.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        title: '간격 확인 모델',
+        description: '탐색 간격 검증',
+        source: 'x = p',
+        parameters: [{ id: 'p', name: 'p', value: 0.5, min: 0, max: 1, step }],
+        sweepName: 'p',
+      }),
+    ),
+  })
+  await expect(page.getByRole('textbox', { name: '모델 이름' })).toHaveValue(
+    '간격 확인 모델',
+  )
+  await ready(page)
+  await expect(page.locator('.solution-value strong')).toHaveText(['0.5'])
+}
+
+test('nondivisible intervals include the maximum once with exact CSV values', async ({
+  page,
+}) => {
+  await importStepModel(page, 0.3)
+  const rows = page.locator('.sweep-table tbody tr')
+  await expect(rows).toHaveCount(5)
+  await expect(rows.locator('td:first-child')).toHaveText([
+    '0',
+    '0.3',
+    '0.6',
+    '0.9',
+    '1',
+  ])
+  const download = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'CSV', exact: true }).click()
+  const file = await download
+  const csv = await readFile((await file.path())!, 'utf8')
+  const values = csv
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .split('\n')
+    .slice(1)
+    .map((line) => line.split(',').map(Number))
+  expect(values).toEqual([
+    [0, 0],
+    [0.3, 0.3],
+    [0.6, 0.6],
+    [0.9, 0.9],
+    [1, 1],
+  ])
+})
+
+test('too many dataset rows are explained without changing interval or breaking the graph', async ({
+  page,
+}) => {
+  await importStepModel(page, 0.00001)
+  await expect(page.getByRole('alert')).toContainText(/2,?000/)
+  await expect(page.locator('.solution-value strong')).toHaveText(['0.5'])
+  await expect(page.locator('.sc-curve')).toHaveCount(1)
+  await expect(
+    page.getByRole('button', { name: 'CSV', exact: true }),
+  ).toBeDisabled()
+  await expect(
+    page.getByRole('slider', { name: 'p 슬라이더' }),
+  ).toHaveAttribute('step', '0.00001')
+  await expect(page.locator('.sweep-table tbody tr')).toHaveCount(0)
 })

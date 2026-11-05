@@ -1179,23 +1179,6 @@ h2 {
   align-items: center;
   margin: 14px 0 7px;
 }
-.data-tabs {
-  display: flex;
-  align-items: center;
-  gap: 17px;
-}
-.data-tabs button {
-  font-size: 11px;
-  color: #9ba88e;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 0;
-}
-.data-tabs button.active {
-  color: #537955;
-  font-weight: 550;
-}
 .data-toolbar > .text-button {
   font-size: 10px;
   color: #9dac91;
@@ -2537,20 +2520,6 @@ h2 {
 .sweep-table tr:focus-visible {
   outline: 2px solid #a4c7a3;
 }
-.sweep-table .current-value-row td {
-  background: #f4f8ef;
-  color: #5a8058;
-  border-bottom: 1px solid #dce8d2;
-}
-.current-row-badge {
-  font-family: inherit;
-  margin-left: 7px;
-  font-size: 8px;
-  color: #8ba17c;
-  border: 1px solid #dbe5d0;
-  border-radius: 3px;
-  padding: 1px 3px;
-}
 .sweep-table tr.highlighted td {
   background: #eaf3e4;
   color: #407048;
@@ -2590,5 +2559,95 @@ h2 {
   }
   .engine-status {
     font-size: 9px;
+  }
+}
+
+.data-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 550;
+  color: #537955;
+  padding: 5px 0;
+}
+.sweep-table-caption b {
+  font-weight: 500;
+  color: #64835a;
+  font-variant-numeric: tabular-nums;
+}
+.dataset-endpoint-note {
+  font-size: 9px;
+  line-height: 1.7;
+  color: #8b977b;
+  margin: 0 0 9px;
+}
+.dataset-error {
+  border: 1px solid #ebd9b9;
+  background: #fffaf1;
+  border-radius: 6px;
+  padding: 13px 14px;
+  margin: 8px 0 15px;
+  font-size: 11px;
+  line-height: 1.9;
+  color: #9a7942;
+}
+.dataset-error span {
+  display: block;
+  margin-top: 5px;
+  color: #9e977f;
+  font-size: 10px;
+}
+.matrix-details {
+  border: 1px solid #e2eadb;
+  border-radius: 6px;
+  margin-top: 17px;
+  background: #fbfcf8;
+  padding: 0 12px;
+}
+.matrix-details summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  color: #6b845f;
+  font-size: 11px;
+  padding: 13px 0;
+  list-style: none;
+}
+.matrix-details summary::-webkit-details-marker {
+  display: none;
+}
+.matrix-details summary svg:last-child {
+  margin-left: auto;
+  transition: transform 0.15s;
+}
+.matrix-details[open] summary svg:last-child {
+  transform: rotate(180deg);
+}
+.matrix-details summary:focus-visible {
+  outline: 2px solid #91b783;
+  outline-offset: 3px;
+}
+.matrix-details > p {
+  font-size: 10px;
+  color: #90a084;
+  line-height: 1.9;
+  border-top: 1px solid #e8eddf;
+  padding-top: 12px;
+}
+.matrix-details .residual-list {
+  margin-bottom: 12px;
+}
+@media print {
+  .matrix-details {
+    border: 0;
+    padding: 0;
+  }
+  .matrix-details > summary {
+    display: none;
+  }
+  .matrix-details > *:not(summary) {
+    display: block !important;
   }
 }

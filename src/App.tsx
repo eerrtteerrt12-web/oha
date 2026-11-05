@@ -100,7 +100,6 @@ export default function App() {
   const [workerReady, setWorkerReady] = useState(false)
   const [revision, setRevision] = useState(0)
   const [view, setView] = useState<'simulation' | 'report'>('simulation')
-  const [detail, setDetail] = useState<'table' | 'matrix'>('table')
   const [guide, setGuide] = useState(false)
   const [examplesOpen, setExamplesOpen] = useState(false)
   const [paramOpen, setParamOpen] = useState(false)
@@ -170,6 +169,7 @@ export default function App() {
               min: sweepParam.min,
               max: sweepParam.max,
               steps: 81,
+              step: sweepParam.step,
             }
           : null,
       })
@@ -337,11 +337,12 @@ export default function App() {
     setToast('계산 리포트를 내려받았습니다.')
   }
   function exportCSV() {
-    if (!result || !payload || pending) return
+    if (!result || !payload || pending || (sweepParam && payload.datasetError))
+      return
     const csv = sweepParam
       ? [
           [project.sweepName, ...result.variables].join(','),
-          ...payload.sweep.map((p) =>
+          ...payload.dataset.map((p) =>
             [p.parameter, ...(p.values || result.variables.map(() => ''))].join(
               ',',
             ),
@@ -369,9 +370,6 @@ export default function App() {
       setToast('올바른 Polymath 프로젝트 JSON 파일이 아닙니다.')
     }
   }
-  const activePoint =
-    selectedIndex !== null ? payload?.sweep[selectedIndex] : null
-  const activeValues = activePoint?.values || result?.values
   return (
     <div className="app-shell">
       <aside className="rail" aria-label="주 메뉴">
@@ -1001,11 +999,12 @@ export default function App() {
                                   {fmt(sweepParam.max)}
                                 </span>
                                 <span className="sample-count">
-                                  {payload?.sweep.length}개 지점
+                                  그래프 {payload?.sweep.length}개 지점
                                 </span>
                               </div>
                               <SolutionChart
                                 points={payload?.sweep || []}
+                                selectionPoints={payload?.dataset}
                                 variables={result.variables}
                                 parameterName={project.sweepName}
                                 currentParameter={sweepParam.value}
@@ -1048,36 +1047,26 @@ export default function App() {
                         </div>
                         <div className="data-section">
                           <div className="data-toolbar">
-                            <div className="data-tabs">
-                              <button
-                                className={detail === 'table' ? 'active' : ''}
-                                onClick={() => setDetail('table')}
-                              >
-                                <Grid2X2 size={13} />
-                                데이터 표
-                              </button>
-                              <button
-                                className={detail === 'matrix' ? 'active' : ''}
-                                onClick={() => setDetail('matrix')}
-                              >
-                                행렬 보기
-                              </button>
-                            </div>
+                            <h3 className="data-section-title">
+                              <Grid2X2 size={13} />
+                              데이터 표
+                            </h3>
                             <button
                               className="text-button"
-                              disabled={pending}
+                              disabled={
+                                pending ||
+                                !!(sweepParam && payload?.datasetError)
+                              }
                               onClick={exportCSV}
                             >
                               <ArrowDownToLine size={13} />
                               CSV
                             </button>
                           </div>
-                          {detail === 'matrix' ? (
-                            <MatrixView result={result} />
-                          ) : sweepParam && payload ? (
+                          {sweepParam && payload ? (
                             <SweepTable
                               payload={payload}
-                              parameterValue={sweepParam.value}
+                              parameterStep={sweepParam.step}
                               selectedIndex={selectedIndex}
                               onSelectIndex={setSelectedIndex}
                             />
@@ -1086,23 +1075,14 @@ export default function App() {
                               <table className="result-table">
                                 <thead>
                                   <tr>
-                                    <th>
-                                      {activePoint
-                                        ? `${project.sweepName} = ${fmt(activePoint.parameter)}`
-                                        : '변수'}
-                                    </th>
+                                    <th>변수</th>
                                     <th>값</th>
                                     <th>방정식 최대 절대 잔차</th>
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {result.variables.map((v, i) => (
-                                    <tr
-                                      key={v}
-                                      className={
-                                        activePoint ? 'highlighted' : ''
-                                      }
-                                    >
+                                    <tr key={v}>
                                       <td>
                                         <span
                                           className="table-color"
@@ -1113,15 +1093,9 @@ export default function App() {
                                         />
                                         {v}
                                       </td>
+                                      <td>{fmt(result.values[i], 10)}</td>
                                       <td>
-                                        {activePoint && !activePoint.values
-                                          ? '해 없음'
-                                          : fmt(activeValues?.[i] ?? NaN, 10)}
-                                      </td>
-                                      <td>
-                                        {activePoint
-                                          ? '—'
-                                          : result.maxResidual.toExponential(2)}
+                                        {result.maxResidual.toExponential(2)}
                                       </td>
                                     </tr>
                                   ))}
@@ -1191,16 +1165,28 @@ export default function App() {
                           차이이며, 조건수가 클수록 입력값의 작은 오차에 해가
                           민감하게 반응할 수 있습니다.
                         </p>
-                        <MatrixView result={result} />
-                        <div className="residual-list">
-                          {result.residuals.map((r, i) => (
-                            <div key={i}>
-                              <span>방정식 {i + 1}</span>
-                              <code>{r.toExponential(3)}</code>
-                              <CheckCircle2 size={13} />
-                            </div>
-                          ))}
-                        </div>
+                        <details className="matrix-details">
+                          <summary>
+                            <Grid2X2 size={14} />
+                            <span>행렬·수치 검증 자세히 보기</span>
+                            <ChevronDown size={15} />
+                          </summary>
+                          <p>
+                            수식을 A·x = b로 변환한 계수와 우변을 확인할 수
+                            있습니다. 계수의 부호나 누락된 항을 검토할 때
+                            활용하세요.
+                          </p>
+                          <MatrixView result={result} />
+                          <div className="residual-list">
+                            {result.residuals.map((r, i) => (
+                              <div key={i}>
+                                <span>방정식 {i + 1}</span>
+                                <code>{r.toExponential(3)}</code>
+                                <CheckCircle2 size={13} />
+                              </div>
+                            ))}
+                          </div>
+                        </details>
                       </div>
                     )}
                     <div className="result-footer">
@@ -1391,6 +1377,9 @@ function RangeEditor({
     step: String(p.step),
   })
   const [error, setError] = useState('')
+  useEffect(() => {
+    setRange({ min: String(p.min), max: String(p.max), step: String(p.step) })
+  }, [p.min, p.max, p.step])
   return (
     <form
       className="range-editor"
@@ -1444,17 +1433,26 @@ function RangeEditor({
 }
 function SweepTable({
   payload,
-  parameterValue,
+  parameterStep,
   selectedIndex,
   onSelectIndex,
 }: {
   payload: SolvePayload
-  parameterValue: number
+  parameterStep: number
   selectedIndex: number | null
   onSelectIndex: (index: number | null) => void
 }) {
   const scroller = useRef<HTMLDivElement>(null)
   const rows = useRef<(HTMLTableRowElement | null)[]>([])
+  const points = payload.dataset
+  const lastGap =
+    points.length > 1
+      ? points.at(-1)!.parameter - points.at(-2)!.parameter
+      : parameterStep
+  const shorterFinalGap =
+    lastGap < parameterStep &&
+    Math.abs(lastGap - parameterStep) >
+      Math.max(Math.abs(lastGap), Math.abs(parameterStep)) * 1e-10
   useEffect(() => {
     if (selectedIndex === null) return
     const el = rows.current[selectedIndex],
@@ -1467,16 +1465,31 @@ function SweepTable({
     else if (rowTop + el.offsetHeight > parent.scrollTop + parent.clientHeight)
       parent.scrollTop = rowTop + el.offsetHeight - parent.clientHeight
   }, [selectedIndex])
+  if (payload.datasetError)
+    return (
+      <div className="dataset-error" role="alert">
+        <p>{payload.datasetError}</p>
+        <span>
+          현재 해와 그래프는 계속 확인할 수 있습니다. 파라미터 범위 설정에서
+          간격을 조정해 주세요.
+        </span>
+      </div>
+    )
   return (
     <>
       <div className="sweep-table-caption">
         <span>
-          {selectedIndex === null
-            ? '현재값과 탐색 데이터를 함께 확인하세요.'
-            : `탐색 지점 ${selectedIndex + 1} / ${payload.sweep.length}`}
+          간격 <b>{String(parameterStep)}</b> ·{' '}
+          <b>{points.length.toLocaleString('en-US')}</b>행
+          {selectedIndex !== null ? ` · 선택 ${selectedIndex + 1}` : ''}
         </span>
-        <span>행을 선택하면 그래프와 연결됩니다.</span>
+        <span>표와 CSV는 같은 계산 지점을 사용합니다.</span>
       </div>
+      {shorterFinalGap && (
+        <p className="dataset-endpoint-note">
+          최댓값을 포함하도록 마지막 구간만 설정 간격보다 짧게 계산했습니다.
+        </p>
+      )}
       <div
         className="table-scroll sweep-table-scroll"
         ref={scroller}
@@ -1498,23 +1511,15 @@ function SweepTable({
             </tr>
           </thead>
           <tbody>
-            <tr className="current-value-row">
-              <td>
-                {fmt(parameterValue)}
-                <span className="current-row-badge">현재</span>
-              </td>
-              {payload.result.values.map((v, i) => (
-                <td key={i}>{fmt(v, 9)}</td>
-              ))}
-            </tr>
-            {payload.sweep.map((p, i) => (
+            {points.map((p, i) => (
               <tr
                 key={i}
                 ref={(el) => {
                   rows.current[i] = el
                 }}
                 tabIndex={0}
-                aria-label={`${payload.sweepName} ${fmt(p.parameter)} 탐색`}
+                data-parameter={p.parameter}
+                aria-label={`${payload.sweepName} ${String(p.parameter)} 탐색`}
                 aria-selected={selectedIndex === i}
                 className={selectedIndex === i ? 'highlighted' : ''}
                 onPointerEnter={() => onSelectIndex(i)}
@@ -1524,9 +1529,7 @@ function SweepTable({
                 onKeyDown={(e) => {
                   if (e.key === 'ArrowDown') {
                     e.preventDefault()
-                    rows.current[
-                      Math.min(i + 1, payload.sweep.length - 1)
-                    ]?.focus()
+                    rows.current[Math.min(i + 1, points.length - 1)]?.focus()
                   }
                   if (e.key === 'ArrowUp') {
                     e.preventDefault()
@@ -1534,9 +1537,11 @@ function SweepTable({
                   }
                 }}
               >
-                <td>{fmt(p.parameter)}</td>
+                <td>{String(p.parameter)}</td>
                 {payload.result.variables.map((_, j) => (
-                  <td key={j}>{p.values ? fmt(p.values[j], 9) : '해 없음'}</td>
+                  <td key={j} title={p.values ? undefined : p.error}>
+                    {p.values ? fmt(p.values[j], 9) : '해 없음'}
+                  </td>
                 ))}
               </tr>
             ))}
