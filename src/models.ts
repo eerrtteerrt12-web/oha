@@ -1,6 +1,9 @@
 import type { ConditionNorm } from './engine'
 
+export type SolverMode = 'linear' | 'nonlinear'
+
 export type Project = {
+  mode?: SolverMode
   title: string
   description: string
   source: string
@@ -17,67 +20,109 @@ export type Project = {
 }
 
 export const DEFAULT_PROJECT: Project = {
-  title: '두 유체의 혼합 공정',
-  description:
-    '농도가 다른 두 유체를 섞어 목표 농도를 만드는 물질수지 모델입니다.',
-  source: '# 전체 유량과 성분 물질수지\nx + y = F\nc_A*x + c_B*y = c_T*F',
-  parameters: [
-    { id: 'F', name: 'F', value: 100, min: 20, max: 200, step: 1 },
-    { id: 'c_A', name: 'c_A', value: 0.2, min: 0, max: 1, step: 0.01 },
-    { id: 'c_B', name: 'c_B', value: 0.8, min: 0, max: 1, step: 0.01 },
-    { id: 'c_T', name: 'c_T', value: 0.5, min: 0.2, max: 0.8, step: 0.01 },
-  ],
-  sweepName: 'c_T',
+  mode: 'linear',
+  title: '새 선형 모델',
+  description: '방정식을 한 줄씩 입력하고 조절할 값을 파라미터로 추가하세요.',
+  source: '',
+  parameters: [],
+  sweepName: '',
   conditionNorm: 'infinity',
 }
 
-export const EXAMPLES: Array<{
+export const DEFAULT_NONLINEAR_PROJECT: Project = {
+  mode: 'nonlinear',
+  title: '새 비선형 모델',
+  description:
+    'f(미지수) = 잔차식을 입력하고 탐색 구간 또는 초기 추정값을 지정하세요.',
+  source: '',
+  parameters: [],
+  sweepName: '',
+  conditionNorm: 'infinity',
+}
+
+export const NONLINEAR_EXAMPLES: Array<{
   id: string
   category: string
   project: Project
 }> = [
-  { id: 'mixing', category: '화학공학 · 물질수지', project: DEFAULT_PROJECT },
   {
-    id: 'first-equations',
-    category: '기초 수학 · 2원 연립방정식',
+    id: 'positive-root',
+    category: '기초 · 하나의 미지수',
     project: {
-      title: '처음 만나는 연립방정식',
+      mode: 'nonlinear',
+      title: '제곱식의 양의 근',
       description:
-        '계수와 미지수만으로 두 방정식의 해를 구합니다. 2x는 2*x와 같습니다.',
+        'x² = target의 양의 해를 구합니다. target을 바꾸면 제곱근이 어떻게 달라지는지 확인할 수 있습니다.',
       source:
-        '# 숫자와 문자 사이의 곱셈 기호는 생략할 수 있어요\n2x + 3y = 12\n4x = 5 + y',
-      parameters: [],
-      sweepName: '',
-    },
-  },
-  {
-    id: 'three-variables',
-    category: '기초 수학 · 3원 연립방정식',
-    project: {
-      title: '세 미지수의 균형',
-      description:
-        '세 개의 식으로 x, y, z를 계산합니다. 정답은 x = 3, y = 4, z = 5입니다.',
-      source:
-        '# 미지수 수와 독립적인 방정식 수를 맞춰주세요\nx + y + z = 12\n2x - y + z = 7\nx + 2y - z = 6',
-      parameters: [],
-      sweepName: '',
-    },
-  },
-  {
-    id: 'voltage-divider',
-    category: '전기공학 · 전압 분배',
-    project: {
-      title: '직렬 저항의 전압 분배',
-      description:
-        '두 직렬 저항의 전압 U1, U2를 계산합니다. V는 전원 전압(V), R1과 R2는 저항(Ω)입니다.',
-      source:
-        '# 키르히호프 전압 법칙과 같은 전류 조건\nU1 + U2 = V\nR2*U1 = R1*U2',
+        '# f(x)의 오른쪽 식이 0이 되는 x를 찾습니다\nf(x) = x^2 - target\nx(min) = 0\nx(max) = 10',
       parameters: [
-        { id: 'V', name: 'V', value: 12, min: 0, max: 24, step: 0.1 },
-        { id: 'R1', name: 'R1', value: 100, min: 10, max: 1000, step: 10 },
-        { id: 'R2', name: 'R2', value: 200, min: 10, max: 1000, step: 10 },
+        { id: 'target', name: 'target', value: 4, min: 1, max: 25, step: 1 },
       ],
-      sweepName: 'V',
+      sweepName: 'target',
+      conditionNorm: 'infinity',
+    },
+  },
+  {
+    id: 'negative-root',
+    category: '기초 · 탐색 구간과 여러 근',
+    project: {
+      mode: 'nonlinear',
+      title: '같은 식에서 음의 근 찾기',
+      description:
+        'x² = 4에는 두 해가 있습니다. 탐색 구간을 -3~0으로 정하면 음의 해 x = -2를 찾습니다.',
+      source:
+        '# 양의 근과 음의 근은 서로 다른 구간에서 탐색하세요\nf(x) = x^2 - 4\nx(min) = -3\nx(max) = 0',
+      parameters: [],
+      sweepName: '',
+      conditionNorm: 'infinity',
+    },
+  },
+  {
+    id: 'circle-intersection',
+    category: '연립 · 초기 추정값',
+    project: {
+      mode: 'nonlinear',
+      title: '원과 직선의 교점',
+      description:
+        'x² + y² = 25와 x - y = 1을 동시에 풉니다. 초기 추정값 (4, 3)은 한 교점을 선택하며, 다른 시작값에서는 다른 교점을 찾을 수 있습니다.',
+      source:
+        '# 식마다 f(미지수)를 하나씩 정의합니다\nf(x) = x^2 + y^2 - 25\nf(y) = x - y - 1\nx(0) = 4\ny(0) = 3',
+      parameters: [],
+      sweepName: '',
+      conditionNorm: 'infinity',
+    },
+  },
+  {
+    id: 'equilibrium-concentration',
+    category: '화학공학 · 평형 농도',
+    project: {
+      mode: 'nonlinear',
+      title: '비선형 물질수지와 평형 농도',
+      description:
+        '평형 관계 k·C² + C = C0를 만족하는 양의 농도 C를 구합니다. k와 C0를 바꾸며 정상상태 농도를 비교하세요.',
+      source:
+        '# k*C^2 + C = C0를 잔차식으로 표현합니다\nf(C) = k*C^2 + C - C0\nC(min) = 0\nC(max) = 10',
+      parameters: [
+        { id: 'k', name: 'k', value: 0.5, min: 0.1, max: 2, step: 0.1 },
+        { id: 'C0', name: 'C0', value: 2, min: 0.5, max: 5, step: 0.1 },
+      ],
+      sweepName: 'C0',
+      conditionNorm: 'infinity',
+    },
+  },
+  {
+    id: 'helper-logarithm',
+    category: '응용 · 보조식과 로그 함수',
+    project: {
+      mode: 'nonlinear',
+      title: '보조식으로 나누어 쓰는 비선형 모델',
+      description:
+        '제공된 문법 문서의 단일 미지수 예제입니다. t를 보조식으로 분리하고 상용로그 log를 사용합니다. 이 구간의 해는 x = 20입니다.',
+      source:
+        '# log는 밑이 10인 로그입니다. 자연로그는 ln을 사용하세요\nf(x) = t + 4*x^2 - 1620\nt = x*log(x/2)\nx(min) = 0.1\nx(max) = 100',
+      parameters: [],
+      sweepName: '',
+      conditionNorm: 'infinity',
     },
   },
 ]

@@ -16,6 +16,7 @@ export type SweepSettings = {
   steps: number
   /** User-selected interval for the table and CSV dataset. */
   step: number
+  maxPoints?: number
 }
 
 /** Represent the user's decimal inputs on one integer lattice, avoiding drift
@@ -157,7 +158,12 @@ export function computeSweeps(
   try {
     return {
       sweep,
-      dataset: parameterValues(min, max, step).map(pointAt),
+      dataset: parameterValues(
+        min,
+        max,
+        step,
+        settings.maxPoints ?? MAX_DATASET_POINTS,
+      ).map(pointAt),
       sweepName: name,
     }
   } catch (error) {

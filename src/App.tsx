@@ -29,7 +29,12 @@ import {
 } from 'lucide-react'
 import SolutionChart, { SERIES_COLORS } from './components/SolutionChart'
 import Guide from './components/Guide'
-import { DEFAULT_PROJECT, EXAMPLES, type Project } from './models'
+import {
+  DEFAULT_PROJECT,
+  DEFAULT_NONLINEAR_PROJECT,
+  NONLINEAR_EXAMPLES,
+  type Project,
+} from './models'
 import {
   classifyCondition,
   type ConditionNorm,
@@ -60,6 +65,7 @@ function isProject(value: unknown): value is Project {
     typeof p.source === 'string' &&
     p.source.length <= 30000 &&
     typeof p.sweepName === 'string' &&
+    (p.mode === undefined || p.mode === 'linear' || p.mode === 'nonlinear') &&
     (p.conditionNorm === undefined ||
       p.conditionNorm === 'infinity' ||
       p.conditionNorm === '2') &&
@@ -103,7 +109,7 @@ export default function App() {
   const [project, setProject] = useState<Project>(initialProject)
   const [payload, setPayload] = useState<SolvePayload | null>(null)
   const [error, setError] = useState('')
-  const [pending, setPending] = useState(true)
+  const [pending, setPending] = useState(false)
   const [workerReady, setWorkerReady] = useState(false)
   const [revision, setRevision] = useState(0)
   const [view, setView] = useState<'simulation' | 'report'>('simulation')
@@ -115,23 +121,44 @@ export default function App() {
   const [paramError, setParamError] = useState('')
   const [rangeEditor, setRangeEditor] = useState(false)
   const [toast, setToast] = useState('')
+  const [undoProject, setUndoProject] = useState<Project | null>(null)
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   const [visibleVariables, setVisibleVariables] = useState<string[]>([])
   const [expanded, setExpanded] = useState(false)
   const [storageOk, setStorageOk] = useState(true)
+  const drafts = useRef<Partial<Record<'linear' | 'nonlinear', Project>>>({})
   const worker = useRef<Worker | null>(null)
   const requestId = useRef(0)
   const importRef = useRef<HTMLInputElement>(null)
   const editorRef = useRef<HTMLTextAreaElement>(null)
   const examplesRef = useRef<HTMLDivElement>(null)
   const result = payload?.result
+  const mode = project.mode ?? 'linear'
+  const nonlinear = mode === 'nonlinear'
+  const evaluation = result?.kind === 'evaluation'
+  const displayWarnings =
+    result?.warnings.filter(
+      (w) =>
+        !(
+          nonlinear &&
+          (w.startsWith('지정 구간에서 찾은 하나의 근') ||
+            w.startsWith('초기 추정값에서 찾은 하나의 해'))
+        ),
+    ) ?? []
+  const hasSource = project.source
+    .split('\n')
+    .some((l) => l.split('#')[0].trim())
   const conditionNorm = project.conditionNorm ?? 'infinity'
   const sensitivity = result ? classifyCondition(result.condition) : null
   const sweepParam = project.parameters.find(
     (p) => p.name === project.sweepName,
   )
   const sourceLines = project.source.split('\n')
-  const equationCount = sourceLines.filter((l) => l.split('#')[0].trim()).length
+  const equationCount = sourceLines.filter((l) =>
+    nonlinear
+      ? /^\s*f\([A-Za-z][A-Za-z0-9_]*\)\s*=/.test(l)
+      : l.split('#')[0].trim(),
+  ).length
   useEffect(() => {
     const w = new Worker(
       new URL('./engine/solver.worker.ts', import.meta.url),
@@ -162,6 +189,12 @@ export default function App() {
   useEffect(() => {
     if (!workerReady) return
     const id = ++requestId.current
+    if (!hasSource) {
+      setPayload(null)
+      setPending(false)
+      setError('')
+      return
+    }
     setPending(true)
     setError('')
     setSelectedIndex(null)
@@ -170,6 +203,7 @@ export default function App() {
         id,
         source: project.source,
         conditionNorm,
+        mode,
         parameters: Object.fromEntries(
           project.parameters.map((p) => [p.name, p.value]),
         ),
@@ -190,12 +224,18 @@ export default function App() {
     project.parameters,
     project.sweepName,
     conditionNorm,
+    mode,
     revision,
     workerReady,
   ])
   useEffect(() => {
     try {
+      drafts.current[project.mode ?? 'linear'] = structuredClone(project)
       localStorage.setItem(STORAGE_KEY, JSON.stringify(project))
+      localStorage.setItem(
+        `${STORAGE_KEY}-${project.mode ?? 'linear'}`,
+        JSON.stringify(project),
+      )
       setStorageOk(true)
     } catch {
       setStorageOk(false)
@@ -207,7 +247,10 @@ export default function App() {
   }, [variableKey])
   useEffect(() => {
     if (!toast) return
-    const t = setTimeout(() => setToast(''), 3500)
+    const t = setTimeout(() => {
+      setToast('')
+      setUndoProject(null)
+    }, 5000)
     return () => clearTimeout(t)
   }, [toast])
   useEffect(() => {
@@ -262,7 +305,45 @@ export default function App() {
     document.addEventListener('pointerdown', close)
     return () => document.removeEventListener('pointerdown', close)
   }, [examplesOpen])
+  function switchMode(nextMode: 'linear' | 'nonlinear') {
+    if (nextMode === mode) return
+    drafts.current[mode] = structuredClone(project)
+    let next = drafts.current[nextMode]
+    if (!next) {
+      try {
+        const saved = JSON.parse(
+          localStorage.getItem(`${STORAGE_KEY}-${nextMode}`) || 'null',
+        )
+        if (isProject(saved) && (saved.mode ?? 'linear') === nextMode)
+          next = saved
+      } catch {}
+    }
+    setProject(
+      structuredClone(
+        next ??
+          (nextMode === 'linear' ? DEFAULT_PROJECT : DEFAULT_NONLINEAR_PROJECT),
+      ),
+    )
+    setPayload(null)
+    setSelectedIndex(null)
+    setError('')
+    setExamplesOpen(false)
+    setExpanded(false)
+    setRangeEditor(false)
+  }
+  function newModel() {
+    setUndoProject(structuredClone(project))
+    setProject(
+      structuredClone(nonlinear ? DEFAULT_NONLINEAR_PROJECT : DEFAULT_PROJECT),
+    )
+    setPayload(null)
+    setError('')
+    setExamplesOpen(false)
+    setSelectedIndex(null)
+    setToast('새 모델을 열었습니다.')
+  }
   function loadExample(p: Project) {
+    setUndoProject(structuredClone(project))
     setProject(structuredClone(p))
     setExamplesOpen(false)
     setSelectedIndex(null)
@@ -343,7 +424,13 @@ export default function App() {
   }
   function exportReport() {
     if (!result || pending || error) return
-    const body = `# ${project.title}\n\n${project.description}\n\n## 입력 수식\n\n\`\`\`text\n${project.source}\n\`\`\`\n\n## 파라미터\n\n${project.parameters.map((p) => `- ${p.name} = ${p.value}`).join('\n') || '없음'}\n\n## 해\n\n| 변수 | 값 |\n| --- | ---: |\n${result.variables.map((v, i) => `| ${v} | ${result.values[i].toPrecision(12)} |`).join('\n')}\n\n최대 절대 잔차: ${result.maxResidual.toExponential(5)}\n\n조건수 (${result.conditionNorm === '2' ? '2-norm · SVD' : '∞-norm'}): ${Number.isNaN(result.condition) ? '계산 불가' : result.condition.toPrecision(8)}\n\n민감도: ${classifyCondition(result.condition).label}\n\n참고 기준: κ < 10^4 안정, 10^4 ≤ κ < 10^8 민감, κ ≥ 10^8 매우 민감. 이 구분은 일반적인 참고 범위이며 입력 오차와 단위에 따라 해석해야 합니다.\n\n${result.conditionError || ''}\n\n계산 엔진: ${result.engine}\n\n${result.warnings.join('\n')}\n`
+    const body = `# ${project.title}\n\n${project.description}\n\n유형: ${nonlinear ? 'Nonlinear' : 'Linear'}\n\n${result.method ? `방법: ${result.method} · 반복 ${result.iterations ?? 0}회\n\n` : ''}${nonlinear && !evaluation ? '초기값·구간에 따라 다른 해에 수렴할 수 있습니다. 조건수는 해 주변 Jacobian의 국소 값입니다.\n\n' : ''}## 입력 수식\n\n\`\`\`text\n${project.source}\n\`\`\`\n\n## 파라미터\n\n${project.parameters.map((p) => `- ${p.name} = ${p.value}`).join('\n') || '없음'}\n\n## 해\n\n| 변수 | 값 |\n| --- | ---: |\n${result.variables.map((v, i) => `| ${v} | ${result.values[i].toPrecision(12)} |`).join('\n')}\n\n${
+      result.auxiliary && Object.keys(result.auxiliary).length
+        ? `## 보조식 계산값\n\n${Object.entries(result.auxiliary)
+            .map(([name, value]) => `- ${name} = ${value.toPrecision(12)}`)
+            .join('\n')}\n\n`
+        : ''
+    }최대 절대 잔차: ${evaluation ? '해당 없음' : result.maxResidual.toExponential(5)}\n\n조건수 (${result.conditionNorm === '2' ? '2-norm · SVD' : '∞-norm'}): ${evaluation ? '해당 없음' : Number.isNaN(result.condition) ? '계산 불가' : result.condition.toPrecision(8)}\n\n민감도: ${evaluation ? '해당 없음' : classifyCondition(result.condition).label}\n\n참고 기준: κ < 10^4 안정, 10^4 ≤ κ < 10^8 민감, κ ≥ 10^8 매우 민감. 이 구분은 일반적인 참고 범위이며 입력 오차와 단위에 따라 해석해야 합니다.\n\n${result.conditionError || ''}\n\n계산 엔진: ${result.engine}\n\n${result.warnings.join('\n')}\n`
     downloadFile('polymath-report.md', body, 'text/markdown;charset=utf-8')
     setToast('계산 리포트를 내려받았습니다.')
   }
@@ -375,7 +462,9 @@ export default function App() {
     try {
       const p = JSON.parse(await file.text())
       if (!isProject(p)) throw new Error()
+      drafts.current[mode] = structuredClone(project)
       setProject(p)
+      setPayload(null)
       setToast('프로젝트를 불러왔습니다.')
     } catch {
       setToast('올바른 Polymath 프로젝트 JSON 파일이 아닙니다.')
@@ -400,24 +489,25 @@ export default function App() {
         <div className="rail-group">
           <button
             className="rail-item active"
-            title="모델 워크스페이스"
-            aria-label="모델 워크스페이스"
+            aria-label="Equation Solver"
+            title="Equation Solver"
             onClick={() => {
               setExpanded(false)
               editorRef.current?.focus()
             }}
           >
-            <Layers3 size={21} />
-            <span>모델</span>
+            <Sigma size={23} />
+            <span>방정식</span>
           </button>
           <button
-            className="rail-item"
-            title="예제 라이브러리"
-            aria-label="예제 라이브러리"
-            onClick={() => setExamplesOpen((v) => !v)}
+            className="rail-item planned-category"
+            disabled
+            aria-label="Differential Equation Solver 준비 중"
+            title="Differential Equation Solver · 준비 중"
           >
-            <BookOpen size={21} />
-            <span>예제</span>
+            <Activity size={22} />
+            <span>미분방정식</span>
+            <small>준비 중</small>
           </button>
         </div>
         <div className="rail-bottom">
@@ -463,21 +553,32 @@ export default function App() {
         </header>
         <main>
           <div className="breadcrumbs">
-            <span>워크스페이스</span>
+            <span>계산 도구</span>
             <ChevronRight size={13} />
-            <span>선형 방정식</span>
+            <span>Equation Solver</span>
+            <ChevronRight size={13} />
+            <span>{nonlinear ? 'Nonlinear' : 'Linear'}</span>
           </div>
           <section className="page-heading">
             <div>
               <div className="eyebrow">
-                <span /> ENGINEERING, SIMPLIFIED
+                <span /> ENGINEERING TOOLKIT · 01
               </div>
               <h1>
-                수식에서, <span>인사이트로.</span>
+                Equation <span>Solver</span>
               </h1>
-              <p>복잡한 코딩 없이 모델을 풀고, 변수의 가능성을 탐색하세요.</p>
+              <p>
+                방정식을 직접 입력하고, 파라미터 변화에 따른 해를 탐색하세요.
+              </p>
             </div>
             <div className="heading-actions">
+              <button
+                className="secondary-button new-model-button"
+                onClick={newModel}
+              >
+                <Plus size={16} />
+                <span>새 모델</span>
+              </button>
               <button
                 className="secondary-button import-button"
                 onClick={() => importRef.current?.click()}
@@ -511,34 +612,30 @@ export default function App() {
               }}
             />
           </section>
-          <div className="problem-tabs" aria-label="문제 유형">
-            <button className="problem-tab selected">
+          <div
+            className="problem-tabs"
+            role="tablist"
+            aria-label="Equation Solver 유형"
+          >
+            <button
+              role="tab"
+              aria-label="Linear"
+              aria-selected={!nonlinear}
+              className={`problem-tab ${!nonlinear ? 'selected' : ''}`}
+              onClick={() => switchMode('linear')}
+            >
               <Grid2X2 size={16} />
-              선형 방정식 <span>LEQ</span>
+              Linear<span>선형 방정식</span>
             </button>
             <button
-              className="problem-tab"
-              disabled
-              title="다음 버전에 추가됩니다"
+              role="tab"
+              aria-label="Nonlinear"
+              aria-selected={nonlinear}
+              className={`problem-tab ${nonlinear ? 'selected' : ''}`}
+              onClick={() => switchMode('nonlinear')}
             >
               <Activity size={16} />
-              미분 방정식 <span>ODE</span>
-            </button>
-            <button
-              className="problem-tab"
-              disabled
-              title="다음 버전에 추가됩니다"
-            >
-              <Sigma size={17} />
-              비선형 방정식 <span>NLE</span>
-            </button>
-            <button
-              className="problem-tab"
-              disabled
-              title="다음 버전에 추가됩니다"
-            >
-              <SlidersHorizontal size={16} />
-              데이터 분석 <span>예정</span>
+              Nonlinear<span>비선형 방정식</span>
             </button>
             <div className="browser-badge">
               <span />내 브라우저에서 안전하게 연산
@@ -552,38 +649,40 @@ export default function App() {
                     <span className="step-number">01</span>
                     <h2>모델 정의</h2>
                   </div>
-                  <div className="examples-wrap" ref={examplesRef}>
-                    <button
-                      className="text-button"
-                      aria-expanded={examplesOpen}
-                      onClick={() => setExamplesOpen((v) => !v)}
-                    >
-                      예제 불러오기
-                      <ChevronDown size={14} />
-                    </button>
-                    {examplesOpen && (
-                      <div className="examples-menu">
-                        <span className="menu-label">
-                          작게 시작하는 엔지니어링
-                        </span>
-                        {EXAMPLES.map((ex) => (
-                          <button
-                            key={ex.id}
-                            onClick={() => loadExample(ex.project)}
-                          >
-                            <span className="example-icon">
-                              <Grid2X2 size={17} />
-                            </span>
-                            <span>
-                              <b>{ex.project.title}</b>
-                              <small>{ex.category}</small>
-                            </span>
-                            <ChevronRight size={14} />
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  {nonlinear && (
+                    <div className="examples-wrap" ref={examplesRef}>
+                      <button
+                        className="text-button"
+                        aria-expanded={examplesOpen}
+                        onClick={() => setExamplesOpen((v) => !v)}
+                      >
+                        예제 불러오기
+                        <ChevronDown size={14} />
+                      </button>
+                      {examplesOpen && (
+                        <div className="examples-menu">
+                          <span className="menu-label">
+                            비선형 모델링 시작하기
+                          </span>
+                          {NONLINEAR_EXAMPLES.map((ex) => (
+                            <button
+                              key={ex.id}
+                              onClick={() => loadExample(ex.project)}
+                            >
+                              <span className="example-icon">
+                                <Grid2X2 size={17} />
+                              </span>
+                              <span>
+                                <b>{ex.project.title}</b>
+                                <small>{ex.category}</small>
+                              </span>
+                              <ChevronRight size={14} />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="model-title">
                   <input
@@ -594,7 +693,9 @@ export default function App() {
                       setProject((p) => ({ ...p, title: e.target.value }))
                     }
                   />
-                  <span className="model-tag">LINEAR SYSTEM</span>
+                  <span className="model-tag">
+                    {nonlinear ? 'NONLINEAR SYSTEM' : 'LINEAR SYSTEM'}
+                  </span>
                 </div>
                 <p className="model-description">{project.description}</p>
                 <div className="editor-toolbar">
@@ -602,7 +703,11 @@ export default function App() {
                     <Code2 size={14} />
                     수식 에디터
                   </span>
-                  <span>한 줄에 하나의 방정식</span>
+                  <span>
+                    {nonlinear
+                      ? 'f(미지수) = 0이 될 잔차식'
+                      : '한 줄에 하나의 방정식'}
+                  </span>
                 </div>
                 <div
                   className={`equation-editor ${error ? 'editor-error' : ''}`}
@@ -621,7 +726,11 @@ export default function App() {
                     onChange={(e) =>
                       setProject((p) => ({ ...p, source: e.target.value }))
                     }
-                    placeholder={'2x + 3y = 12\n4x = 5 + y'}
+                    placeholder={
+                      nonlinear
+                        ? 'f(x) = x^2 - 4\nx(min) = 0\nx(max) = 3'
+                        : '방정식을 입력하세요\n예: 2x + y = 10'
+                    }
                     onKeyDown={(e) => {
                       if (e.key === 'Tab') {
                         e.preventDefault()
@@ -647,10 +756,9 @@ export default function App() {
                     <i
                       className={error ? 'status-dot error-dot' : 'status-dot'}
                     />
-                    {equationCount}개 방정식
-                    {result && !error
-                      ? ` · ${result.variables.length}개 미지수`
-                      : ''}
+                    {evaluation
+                      ? `명시식·표현식 ${result.variables.length}개`
+                      : `${equationCount}개 방정식${result && !error ? ` · ${result.variables.length}개 미지수` : ''}`}
                   </span>
                   <button
                     className="text-button syntax-button"
@@ -667,7 +775,7 @@ export default function App() {
                   <button
                     className="primary-button"
                     onClick={() => setRevision((v) => v + 1)}
-                    disabled={pending}
+                    disabled={pending || !hasSource}
                   >
                     {pending ? (
                       <LoaderCircle size={15} className="spin" />
@@ -714,15 +822,7 @@ export default function App() {
                           <span className="parameter-role">
                             {p.name === project.sweepName
                               ? '탐색 변수'
-                              : project.source === DEFAULT_PROJECT.source
-                                ? (
-                                    {
-                                      F: '전체 유량',
-                                      c_A: '유체 A 농도',
-                                      c_B: '유체 B 농도',
-                                    } as Record<string, string>
-                                  )[p.name] || '상수'
-                                : '상수'}
+                              : '상수'}
                           </span>
                         </div>
                         <div className="parameter-input-wrap">
@@ -775,13 +875,7 @@ export default function App() {
                       />
                       <div className="range-labels">
                         <span>{fmt(p.min)}</span>
-                        {i === 0 && (
-                          <span>
-                            {p.name === 'F'
-                              ? '전체 유입 유량'
-                              : '파라미터 범위'}
-                          </span>
-                        )}
+                        {i === 0 && <span>파라미터 범위</span>}
                         <span>{fmt(p.max)}</span>
                       </div>
                       {rangeEditor && (
@@ -833,8 +927,8 @@ export default function App() {
                 <p>
                   <b>작은 변화가 만드는 새로운 발견</b>
                   <span>
-                    {project.source === DEFAULT_PROJECT.source
-                      ? '목표 농도 c_T를 바꾸면, 필요한 두 유량이 어떻게 달라질까요?'
+                    {nonlinear
+                      ? '구간이나 초기값을 바꿔 다른 해가 존재하는지 살펴보세요.'
                       : '수식 속 상수를 파라미터로 등록해 해의 변화를 탐색해 보세요.'}
                   </span>
                 </p>
@@ -863,9 +957,11 @@ export default function App() {
                         ? '계산 중'
                         : error
                           ? '입력 확인'
-                          : result?.engine === 'wasm'
-                            ? 'WebAssembly'
-                            : 'JavaScript'}
+                          : !result
+                            ? '입력 대기'
+                            : result?.engine === 'wasm'
+                              ? 'WebAssembly'
+                              : 'JavaScript'}
                     </span>
                     <button
                       className="icon-button"
@@ -898,7 +994,11 @@ export default function App() {
                     <div className="error-icon">
                       <Sigma size={24} />
                     </div>
-                    <h3>수식을 한 번 확인해 주세요.</h3>
+                    <h3>
+                      {nonlinear
+                        ? '해를 구하지 못했습니다.'
+                        : '수식을 한 번 확인해 주세요.'}
+                    </h3>
                     <p>{error}</p>
                     <button
                       className="secondary-button"
@@ -909,6 +1009,32 @@ export default function App() {
                       입력 가이드 보기
                       <ArrowRight size={14} />
                     </button>
+                  </div>
+                ) : !hasSource ? (
+                  <div className="empty-workspace">
+                    <div className="empty-workspace-icon">
+                      <Sigma size={28} />
+                    </div>
+                    <span>
+                      {nonlinear ? 'NONLINEAR EQUATIONS' : 'LINEAR EQUATIONS'}
+                    </span>
+                    <h3>모델을 입력하면 해석을 시작합니다.</h3>
+                    <p>
+                      {nonlinear
+                        ? '단일근은 탐색 구간을, 연립방정식은 초기 추정값을 함께 적어 주세요.'
+                        : '한 줄에 방정식 하나를 입력하세요. 알려진 값은 파라미터로 등록할 수 있습니다.'}
+                    </p>
+                    {nonlinear && (
+                      <button
+                        className="secondary-button"
+                        onClick={() =>
+                          loadExample(NONLINEAR_EXAMPLES[0].project)
+                        }
+                      >
+                        <BookOpen size={15} />
+                        비선형 예제로 시작하기
+                      </button>
+                    )}
                   </div>
                 ) : !result ? (
                   <div className="loading-state">
@@ -922,10 +1048,16 @@ export default function App() {
                       <div className="summary-label">
                         <span className="found-badge">
                           <Check size={12} />
-                          유일해
+                          {nonlinear
+                            ? evaluation
+                              ? '계산 완료'
+                              : '수렴'
+                            : '유일해'}
                         </span>
                         <span>
-                          {result.variables.length}개 미지수의 해를 찾았습니다
+                          {evaluation
+                            ? `${result.variables.length}개 계산 결과`
+                            : `${result.variables.length}개 미지수의 해를 찾았습니다`}
                         </span>
                       </div>
                       <div
@@ -942,29 +1074,45 @@ export default function App() {
                               <span>{v}</span>
                             </div>
                             <strong>{fmt(result.values[i], 7)}</strong>
-                            <span className="value-caption">
-                              {project.title === DEFAULT_PROJECT.title &&
-                              (v === 'x' || v === 'y')
-                                ? `유체 ${v === 'x' ? 'A' : 'B'}의 유량`
-                                : '계산된 값'}
-                            </span>
+                            <span className="value-caption">계산된 값</span>
                           </div>
                         ))}
                       </div>
                     </div>
-                    {result.warnings.length > 0 && (
+                    {displayWarnings.length > 0 && (
                       <div className="warning-box">
-                        {result.warnings.map((w, i) => (
+                        {displayWarnings.map((w, i) => (
                           <p key={i}>{w}</p>
                         ))}
                       </div>
                     )}
-                    {project.source === DEFAULT_PROJECT.source &&
-                      result.values.some((v) => v < -1e-8) && (
-                        <div className="warning-box physical-warning">
-                          음수인 유량이 계산되었습니다. 수학적 해는 존재하지만,
-                          실제 혼합에서는 목표 농도가 두 유체의 농도 사이에
-                          있어야 합니다.
+                    {nonlinear && (
+                      <div className="nonlinear-status">
+                        <div>
+                          <span>{result.method}</span>
+                          {!evaluation && (
+                            <b>반복 {result.iterations ?? 0}회</b>
+                          )}
+                        </div>
+                        <p>
+                          {evaluation
+                            ? '명시식을 계산한 결과입니다.'
+                            : '초기값·탐색 구간에 따라 다른 해에 수렴할 수 있습니다. 이 결과가 전체 해의 유일성을 뜻하지는 않습니다.'}
+                        </p>
+                      </div>
+                    )}
+                    {result.auxiliary &&
+                      Object.keys(result.auxiliary).length > 0 && (
+                        <div className="auxiliary-values">
+                          <span>보조식 계산값</span>
+                          {Object.entries(result.auxiliary).map(
+                            ([name, value]) => (
+                              <span key={name}>
+                                <code>{name}</code>
+                                <b>{fmt(value, 10)}</b>
+                              </span>
+                            ),
+                          )}
                         </div>
                       )}
                     {view === 'simulation' ? (
@@ -1012,6 +1160,7 @@ export default function App() {
                               </div>
                               <SolutionChart
                                 points={payload?.sweep || []}
+                                modelKind={nonlinear ? 'nonlinear' : 'linear'}
                                 selectionPoints={payload?.dataset}
                                 variables={result.variables}
                                 parameterName={project.sweepName}
@@ -1028,6 +1177,12 @@ export default function App() {
                                   )
                                 }
                               />
+                              {nonlinear && (
+                                <p className="nonlinear-sweep-note">
+                                  각 지점은 같은 초기값·구간으로 다시 풉니다.
+                                  모든 해를 추적하는 그래프는 아닙니다.
+                                </p>
+                              )}
                               <p className="chart-footnote">
                                 <span className="chart-current-dot" />
                                 점선은 현재 설정값입니다. 그래프 위에 마우스를
@@ -1085,7 +1240,9 @@ export default function App() {
                                   <tr>
                                     <th>변수</th>
                                     <th>값</th>
-                                    <th>방정식 최대 절대 잔차</th>
+                                    {!evaluation && (
+                                      <th>방정식 최대 절대 잔차</th>
+                                    )}
                                   </tr>
                                 </thead>
                                 <tbody>
@@ -1102,9 +1259,11 @@ export default function App() {
                                         {v}
                                       </td>
                                       <td>{fmt(result.values[i], 10)}</td>
-                                      <td>
-                                        {result.maxResidual.toExponential(2)}
-                                      </td>
+                                      {!evaluation && (
+                                        <td>
+                                          {result.maxResidual.toExponential(2)}
+                                        </td>
+                                      )}
                                     </tr>
                                   ))}
                                 </tbody>
@@ -1132,62 +1291,75 @@ export default function App() {
                             리포트 저장
                           </button>
                         </div>
-                        <div className="condition-controls">
-                          <div>
-                            <label htmlFor="condition-norm">
-                              조건수 계산 방식
-                            </label>
-                            <p>입력 오차에 대한 해의 민감도를 확인합니다.</p>
+                        {!evaluation && (
+                          <div className="condition-controls">
+                            <div>
+                              <label htmlFor="condition-norm">
+                                {nonlinear
+                                  ? '국소 조건수 계산 방식'
+                                  : '조건수 계산 방식'}
+                              </label>
+                              <p>입력 오차에 대한 해의 민감도를 확인합니다.</p>
+                            </div>
+                            <div className="condition-select-wrap">
+                              <select
+                                id="condition-norm"
+                                aria-label="조건수 계산 방식"
+                                value={conditionNorm}
+                                onChange={(e) =>
+                                  setProject((p) => ({
+                                    ...p,
+                                    conditionNorm: e.target
+                                      .value as ConditionNorm,
+                                  }))
+                                }
+                              >
+                                <option value="infinity">
+                                  ∞-norm · 행 합 기준
+                                </option>
+                                <option value="2">2-norm · SVD 기준</option>
+                              </select>
+                              <ChevronDown size={13} />
+                            </div>
                           </div>
-                          <div className="condition-select-wrap">
-                            <select
-                              id="condition-norm"
-                              aria-label="조건수 계산 방식"
-                              value={conditionNorm}
-                              onChange={(e) =>
-                                setProject((p) => ({
-                                  ...p,
-                                  conditionNorm: e.target
-                                    .value as ConditionNorm,
-                                }))
-                              }
-                            >
-                              <option value="infinity">
-                                ∞-norm · 행 합 기준
-                              </option>
-                              <option value="2">2-norm · SVD 기준</option>
-                            </select>
-                            <ChevronDown size={13} />
-                          </div>
-                        </div>
-                        <div className="report-metrics">
-                          <div>
-                            <span>최대 절대 잔차</span>
-                            <strong>
-                              {result.maxResidual.toExponential(3)}
-                            </strong>
-                          </div>
+                        )}
+                        <div
+                          className={`report-metrics ${evaluation ? 'evaluation-metrics' : ''}`}
+                        >
                           <div>
                             <span>
-                              조건수 ·{' '}
-                              {result.conditionNorm === '2'
-                                ? '2-norm'
-                                : '∞-norm'}
+                              {evaluation ? '계산 항목' : '최대 절대 잔차'}
                             </span>
-                            <strong className="condition-value">
-                              {fmt(result.condition, 7)}
+                            <strong>
+                              {evaluation
+                                ? `${result.variables.length}개`
+                                : result.maxResidual.toExponential(3)}
                             </strong>
-                            <span
-                              className="condition-badge"
-                              data-level={sensitivity?.level}
-                              role="status"
-                              aria-live="polite"
-                              aria-busy={pending}
-                            >
-                              <i />
-                              {sensitivity?.label}
-                            </span>
                           </div>
+                          {!evaluation && (
+                            <div>
+                              <span>
+                                조건수 ·{' '}
+                                {result.conditionNorm === '2'
+                                  ? '2-norm'
+                                  : '∞-norm'}
+                                {nonlinear && !evaluation ? ' · 국소' : ''}
+                              </span>
+                              <strong className="condition-value">
+                                {fmt(result.condition, 7)}
+                              </strong>
+                              <span
+                                className="condition-badge"
+                                data-level={sensitivity?.level}
+                                role="status"
+                                aria-live="polite"
+                                aria-busy={pending}
+                              >
+                                <i />
+                                {sensitivity?.label}
+                              </span>
+                            </div>
+                          )}
                           <div>
                             <span>계산 시간</span>
                             <strong>
@@ -1196,58 +1368,70 @@ export default function App() {
                             </strong>
                           </div>
                         </div>
-                        <div
-                          className="condition-explanation"
-                          data-level={sensitivity?.level}
-                        >
-                          <p>
-                            {result.conditionError || sensitivity?.description}
-                          </p>
+                        {!evaluation && (
                           <div
-                            className="condition-thresholds"
-                            aria-label="조건수 민감도 참고 범위"
+                            className="condition-explanation"
+                            data-level={sensitivity?.level}
                           >
-                            <span>
-                              <i className="condition-dot stable" />
-                              <b>안정</b> κ &lt; 10⁴
-                            </span>
-                            <span>
-                              <i className="condition-dot sensitive" />
-                              <b>민감</b> 10⁴ ≤ κ &lt; 10⁸
-                            </span>
-                            <span>
-                              <i className="condition-dot very-sensitive" />
-                              <b>매우 민감</b> κ ≥ 10⁸
-                            </span>
+                            <p>
+                              {result.conditionError ||
+                                sensitivity?.description}
+                            </p>
+                            <div
+                              className="condition-thresholds"
+                              aria-label="조건수 민감도 참고 범위"
+                            >
+                              <span>
+                                <i className="condition-dot stable" />
+                                <b>안정</b> κ &lt; 10⁴
+                              </span>
+                              <span>
+                                <i className="condition-dot sensitive" />
+                                <b>민감</b> 10⁴ ≤ κ &lt; 10⁸
+                              </span>
+                              <span>
+                                <i className="condition-dot very-sensitive" />
+                                <b>매우 민감</b> κ ≥ 10⁸
+                              </span>
+                            </div>
+                            {nonlinear && (
+                              <p className="local-condition-note">
+                                {evaluation
+                                  ? '명시식 계산에는 조건수가 적용되지 않습니다.'
+                                  : '조건수는 수렴점의 Jacobian에 대한 국소 진단입니다. 1×1 비영 Jacobian의 조건수는 항상 1이므로 단일근의 민감도는 도함수 크기도 함께 확인하세요. 전체 영역의 안정성은 보장하지 않습니다.'}
+                              </p>
+                            )}
+                            <p className="condition-caveat">
+                              위 범위는 참고 기준입니다. 실제 신뢰도는 측정
+                              오차와 단위·스케일에 따라 달라지며, 작은
+                              잔차만으로 해의 정확도를 보장하지는 않습니다.
+                            </p>
+                            <details className="condition-guide">
+                              <summary>
+                                계산 방식의 차이 알아보기
+                                <ChevronDown size={12} />
+                              </summary>
+                              <p>
+                                <b>∞-norm</b>은 A와 A⁻¹의 최대 절댓값 행 합을
+                                곱합니다. <b>2-norm</b>은 직접 SVD로 구한
+                                최대·최소 특이값의 비율 σmax / σmin입니다.
+                              </p>
+                              <p>
+                                두 방식은 서로 다른 norm으로 민감도를 측정하므로
+                                값이 달라질 수 있습니다. 2-norm 선택이 해 자체의
+                                계산 정밀도를 높이는 것은 아닙니다.
+                              </p>
+                              <p>
+                                {nonlinear
+                                  ? '조건수는 수렴점에서 계산한 Jacobian J를 기준으로 합니다.'
+                                  : '조건수는 수식에서 추출한 계수 행렬 A를 기준으로 합니다.'}{' '}
+                                식이나 변수의 단위를 바꾸면 값이 달라질 수
+                                있습니다. 계산 방식 선택은 진단에 적용되며, 해를
+                                구하는 솔버는 동일합니다.
+                              </p>
+                            </details>
                           </div>
-                          <p className="condition-caveat">
-                            위 범위는 참고 기준입니다. 실제 신뢰도는 측정 오차와
-                            단위·스케일에 따라 달라지며, 작은 잔차만으로 해의
-                            정확도를 보장하지는 않습니다.
-                          </p>
-                          <details className="condition-guide">
-                            <summary>
-                              계산 방식의 차이 알아보기
-                              <ChevronDown size={12} />
-                            </summary>
-                            <p>
-                              <b>∞-norm</b>은 A와 A⁻¹의 최대 절댓값 행 합을
-                              곱합니다. <b>2-norm</b>은 직접 SVD로 구한
-                              최대·최소 특이값의 비율 σmax / σmin입니다.
-                            </p>
-                            <p>
-                              두 방식은 서로 다른 norm으로 민감도를 측정하므로
-                              값이 달라질 수 있습니다. 2-norm 선택이 해 자체의
-                              계산 정밀도를 높이는 것은 아닙니다.
-                            </p>
-                            <p>
-                              조건수는 수식에서 추출한 계수 행렬 A를 기준으로
-                              계산합니다. 식이나 변수의 단위를 바꾸면 값이
-                              달라질 수 있습니다. 계산 방식 선택은 진단에
-                              적용되며, 해를 구하는 솔버는 동일합니다.
-                            </p>
-                          </details>
-                        </div>
+                        )}
                         <h4>01 / 입력 모델</h4>
                         <pre>{project.source}</pre>
                         <h4>02 / 파라미터</h4>
@@ -1265,33 +1449,40 @@ export default function App() {
                         </div>
                         <h4>03 / 수치 검증</h4>
                         <p className="report-explanation">
-                          부분 피벗팅을 사용하는 가우스 소거법으로 A·x = b를
-                          풉니다. 잔차는 입력한 각 방정식에서 좌변과 우변의
-                          차이이며, 조건수가 클수록 입력값의 작은 오차에 해가
-                          민감하게 반응할 수 있습니다.
+                          {nonlinear
+                            ? evaluation
+                              ? '명시식의 의존 관계를 확인하여 순서대로 계산합니다.'
+                              : '잔차는 f(x)에 해를 대입한 값입니다. 아래 Jacobian은 수렴점에서의 국소 변화율이며, 조건수가 클수록 작은 입력 변화에 해가 민감할 수 있습니다.'
+                            : '부분 피벗팅 가우스 소거법으로 A·x = b를 풉니다. 잔차는 입력 방정식의 좌변과 우변 차이입니다. 조건수가 클수록 작은 입력 오차에 해가 민감할 수 있습니다.'}
                         </p>
-                        <details className="matrix-details">
-                          <summary>
-                            <Grid2X2 size={14} />
-                            <span>행렬·수치 검증 자세히 보기</span>
-                            <ChevronDown size={15} />
-                          </summary>
-                          <p>
-                            수식을 A·x = b로 변환한 계수와 우변을 확인할 수
-                            있습니다. 계수의 부호나 누락된 항을 검토할 때
-                            활용하세요.
-                          </p>
-                          <MatrixView result={result} />
-                          <div className="residual-list">
-                            {result.residuals.map((r, i) => (
-                              <div key={i}>
-                                <span>방정식 {i + 1}</span>
-                                <code>{r.toExponential(3)}</code>
-                                <CheckCircle2 size={13} />
-                              </div>
-                            ))}
-                          </div>
-                        </details>
+                        {!evaluation && (
+                          <details className="matrix-details">
+                            <summary>
+                              <Grid2X2 size={14} />
+                              <span>
+                                {nonlinear
+                                  ? 'Jacobian·수치 검증 자세히 보기'
+                                  : '행렬·수치 검증 자세히 보기'}
+                              </span>
+                              <ChevronDown size={15} />
+                            </summary>
+                            <p>
+                              {nonlinear
+                                ? '수렴점의 Jacobian J와 마지막 잔차를 확인합니다. J·Δx = −f(x)는 국소 선형화이며 원래 비선형 방정식 자체는 아닙니다.'
+                                : '수식을 A·x = b로 변환한 계수와 우변을 확인합니다. 부호나 누락된 항을 검토할 때 활용하세요.'}
+                            </p>
+                            <MatrixView result={result} />
+                            <div className="residual-list">
+                              {result.residuals.map((r, i) => (
+                                <div key={i}>
+                                  <span>방정식 {i + 1}</span>
+                                  <code>{r.toExponential(3)}</code>
+                                  <CheckCircle2 size={13} />
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        )}
                       </div>
                     )}
                     <div className="result-footer">
@@ -1302,8 +1493,13 @@ export default function App() {
                         {fmt(result.durationMs, 3)} ms
                       </span>
                       <span>
-                        부분 피벗팅 · {result.matrix.length} ×{' '}
-                        {result.variables.length}
+                        {nonlinear ? result.method : '부분 피벗팅'}
+                        {!evaluation && (
+                          <>
+                            {' '}
+                            · {result.matrix.length} × {result.variables.length}
+                          </>
+                        )}
                       </span>
                     </div>
                   </>
@@ -1333,7 +1529,7 @@ export default function App() {
               모델링의 다음 가능성
             </span>
             <span>
-              LEQ Preview <span className="footer-dot">·</span> 데이터는 이
+              Equation Solver <span className="footer-dot">·</span> 데이터는 이
               브라우저에만 저장됩니다.
             </span>
           </footer>
@@ -1343,12 +1539,24 @@ export default function App() {
         <div className="toast" role="status">
           <CheckCircle2 size={17} />
           {toast}
+          {undoProject && (
+            <button
+              className="undo-button"
+              onClick={() => {
+                setProject(undoProject)
+                setUndoProject(null)
+                setToast('이전 모델을 복원했습니다.')
+              }}
+            >
+              되돌리기
+            </button>
+          )}
           <button aria-label="알림 닫기" onClick={() => setToast('')}>
             <X size={14} />
           </button>
         </div>
       )}
-      {guide && <Guide onClose={() => setGuide(false)} />}
+      {guide && <Guide mode={mode} onClose={() => setGuide(false)} />}
       {paramOpen && (
         <div className="modal-backdrop" onClick={() => setParamOpen(false)}>
           <section
@@ -1425,7 +1633,12 @@ function MatrixView({
   return (
     <div className="matrix-view">
       <div className="matrix-caption">
-        A · x = b <span>입력 수식을 자동으로 행렬로 변환합니다.</span>
+        {result.kind === 'nonlinear' ? 'J · Δx = −f(x)' : 'A · x = b'}{' '}
+        <span>
+          {result.kind === 'nonlinear'
+            ? '수렴점에서의 국소 선형화'
+            : '입력 수식을 자동으로 행렬로 변환합니다.'}
+        </span>
       </div>
       <div className="matrix-equation">
         <div className="matrix-bracket">
@@ -1447,7 +1660,10 @@ function MatrixView({
             <tbody>
               {result.variables.map((v) => (
                 <tr key={v}>
-                  <td className="matrix-variable">{v}</td>
+                  <td className="matrix-variable">
+                    {result.kind === 'nonlinear' ? 'Δ' : ''}
+                    {v}
+                  </td>
                 </tr>
               ))}
             </tbody>

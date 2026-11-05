@@ -12,6 +12,7 @@ import './SolutionChart.css'
 type ChartPoint = { parameter: number; values: number[] | null; error?: string }
 
 export interface SolutionChartProps {
+  modelKind?: 'linear' | 'nonlinear'
   points: ChartPoint[]
   selectionPoints?: ChartPoint[]
   variables: string[]
@@ -112,6 +113,7 @@ function niceDomain(values: number[]): [number, number, number[]] {
 }
 
 export default function SolutionChart({
+  modelKind = 'linear',
   points,
   selectionPoints,
   variables,
@@ -315,7 +317,7 @@ export default function SolutionChart({
         >
           <title
             id={titleId}
-          >{`${parameterName}에 따른 선형 방정식 해의 변화`}</title>
+          >{`${parameterName}에 따른 ${modelKind === 'nonlinear' ? '비선형' : '선형'} 방정식 해의 변화`}</title>
           <desc id={descriptionId}>
             좌우 방향키로 값을 탐색하고 Home, End로 처음과 끝으로 이동할 수
             있습니다. 그래프의 탐색 지점은 데이터 표와 연결됩니다.

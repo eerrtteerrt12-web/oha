@@ -1,6 +1,21 @@
 import { test, expect, type Page } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 
+const runtimeErrors = new WeakMap<Page, string[]>()
+test.beforeEach(async ({ page }) => {
+  const errors: string[] = []
+  runtimeErrors.set(page, errors)
+  page.on('pageerror', (error) => errors.push(error.message))
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text())
+  })
+})
+test.afterEach(async ({ page }) => {
+  expect(runtimeErrors.get(page), 'browser runtime and console errors').toEqual(
+    [],
+  )
+})
+
 async function ready(page: Page) {
   await expect(page.locator('.engine-status')).toHaveText(/WebAssembly/)
   await expect(page.locator('.result-footer')).toContainText('계산 완료')
@@ -11,397 +26,7 @@ async function openExample(page: Page, name: string) {
     .locator('.examples-menu')
     .getByRole('button', { name: new RegExp(name) })
     .click()
-  await ready(page)
-}
-
-test.beforeEach(async ({ page }) => {
-  await page.goto('/')
-  await ready(page)
-})
-
-test('WebAssembly solves mixing model and parameter slider updates live', async ({
-  page,
-}) => {
-  await expect(page.locator('.solution-value strong')).toHaveText(['50', '50'])
-  await page.getByRole('slider', { name: 'c_T 슬라이더' }).fill('0.6')
-  await expect(page.locator('.solution-value strong').nth(0)).toHaveText(
-    '33.33333',
-  )
-  await expect(page.locator('.solution-value strong').nth(1)).toHaveText(
-    '66.66667',
-  )
-  await ready(page)
-})
-
-test('nonlinear models show errors and corrected equations recover', async ({
-  page,
-}) => {
-  await page
-    .getByRole('textbox', { name: '방정식 입력' })
-    .fill('x + y = 10\nx*y = 20')
-  await expect(page.getByRole('alert')).toContainText(
-    '미지수끼리의 곱은 선형식이 아닙니다',
-  )
-  await page
-    .getByRole('textbox', { name: '방정식 입력' })
-    .fill('x + y = 10\nx - y = 2')
-  await ready(page)
-  await expect(page.locator('.solution-value strong')).toHaveText(['6', '4'])
-})
-
-test('example switching solves standard shorthand and three-variable systems', async ({
-  page,
-}) => {
-  await openExample(page, '처음 만나는 연립방정식')
-  await expect(page.locator('.solution-value strong')).toHaveText([
-    '1.928571',
-    '2.714286',
-  ])
-  await expect(page.getByText('상수에 움직임을 더해 보세요.')).toBeVisible()
-  await openExample(page, '세 미지수의 균형')
-  await expect(page.locator('.solution-value strong')).toHaveText([
-    '3',
-    '4',
-    '5',
-  ])
-})
-
-test('graph exploration and legend are connected to data table', async ({
-  page,
-}) => {
-  const chart = page.getByRole('img', { name: /c_T에 따른 선형 방정식/ })
-  await chart.focus()
-  await chart.press('Home')
-  await expect(
-    page.locator('.sweep-table tr[aria-selected=true] td'),
-  ).toHaveText(['0.2', '100', '0'])
-  await chart.press('ArrowRight')
-  await expect(
-    page.locator('.sweep-table tr[aria-selected=true] td').first(),
-  ).toHaveText('0.21')
-  await chart.press('End')
-  await expect(
-    page.locator('.sweep-table tr[aria-selected=true] td'),
-  ).toHaveText(['0.8', '0', '100'])
-  const tablePoint = page.getByRole('row', {
-    name: 'c_T 0.35 탐색',
-    exact: true,
-  })
-  await tablePoint.hover()
-  await expect(tablePoint).toHaveAttribute('aria-selected', 'true')
-  await expect(page.locator('.sc-tooltip-heading strong')).toHaveText('0.35')
-  await tablePoint.focus()
-  await tablePoint.press('ArrowDown')
-  await expect(page.locator('.sc-tooltip-heading strong')).toHaveText('0.36')
-  await page.getByRole('button', { name: 'x 곡선 표시' }).click()
-  await expect(
-    page.getByRole('button', { name: 'x 곡선 표시' }),
-  ).toHaveAttribute('aria-pressed', 'false')
-  await expect(page.locator('.sc-curve')).toHaveCount(1)
-})
-
-test('advanced matrix report and exports reflect current results', async ({
-  page,
-}) => {
-  await expect(page.getByRole('button', { name: '행렬 보기' })).toHaveCount(0)
-  await expect(page.locator('.matrix-equation')).toHaveCount(0)
-  const csv = page.waitForEvent('download')
-  await page.getByRole('button', { name: 'CSV', exact: true }).click()
-  const csvDownload = await csv
-  expect(csvDownload.suggestedFilename()).toBe('polymath-data.csv')
-  const csvText = await readFile((await csvDownload.path())!, 'utf8')
-  expect(csvText.replace(/^\uFEFF/, '').split('\n')[0]).toBe('c_T,x,y')
-  expect(csvText.trim().split('\n')).toHaveLength(62)
-  await page.getByRole('button', { name: '해석 리포트' }).click()
-  await expect(page.locator('.report-metrics')).toContainText('최대 절대 잔차')
-  await expect(page.locator('.matrix-equation')).not.toBeVisible()
-  await page.getByText('행렬·수치 검증 자세히 보기', { exact: true }).click()
-  await expect(page.locator('.matrix-equation')).toBeVisible()
-  await expect(page.locator('.matrix-equation')).toContainText('100')
-  const report = page.waitForEvent('download')
-  await page.getByRole('button', { name: '리포트 저장' }).click()
-  const reportDownload = await report
-  expect(reportDownload.suggestedFilename()).toBe('polymath-report.md')
-  const reportText = await readFile((await reportDownload.path())!, 'utf8')
-  expect(reportText).toContain('| x | 50.0000000000 |')
-  expect(reportText).toContain('계산 엔진: wasm')
-  const saved = page.waitForEvent('download')
-  await page.getByRole('button', { name: '프로젝트 저장' }).click()
-  const projectDownload = await saved
-  expect(projectDownload.suggestedFilename()).toBe('polymath-project.json')
-  const projectFile = JSON.parse(
-    await readFile((await projectDownload.path())!, 'utf8'),
-  )
-  expect(
-    projectFile.parameters.find((p: { name: string }) => p.name === 'c_T')
-      .value,
-  ).toBe(0.5)
-})
-
-test('local project persists on reload and guide opens accessibly', async ({
-  page,
-}) => {
-  await page
-    .getByRole('textbox', { name: '모델 이름' })
-    .fill('브라우저 저장 테스트')
-  await page.getByRole('slider', { name: 'F 슬라이더' }).fill('120')
-  await expect(page.locator('.solution-value strong')).toHaveText(['60', '60'])
-  await page.reload()
-  await ready(page)
-  await expect(page.getByRole('textbox', { name: '모델 이름' })).toHaveValue(
-    '브라우저 저장 테스트',
-  )
-  await expect(page.locator('.solution-value strong')).toHaveText(['60', '60'])
-  await page
-    .getByRole('button', { name: '사용 가이드', exact: true })
-    .first()
-    .click()
-  await expect(page.getByRole('dialog')).toBeVisible()
-  await page.keyboard.press('Escape')
-  await expect(page.getByRole('dialog')).not.toBeVisible()
-})
-
-test('desktop and mobile render without horizontal overflow', async ({
-  page,
-}) => {
-  await page.screenshot({ path: '/tmp/polymath-desktop.png', fullPage: true })
-  const desktopOverflow = await page.evaluate(
-    () => document.documentElement.scrollWidth > window.innerWidth,
-  )
-  expect(desktopOverflow).toBe(false)
-  await page.setViewportSize({ width: 390, height: 844 })
-  await page.screenshot({ path: '/tmp/polymath-mobile.png', fullPage: true })
-  const mobileOverflow = await page.evaluate(
-    () => document.documentElement.scrollWidth > window.innerWidth,
-  )
-  expect(mobileOverflow).toBe(false)
-  await expect(page.getByRole('button', { name: '모델 풀기' })).toBeVisible()
-})
-
-test('project import restores a custom model and rejects malformed data', async ({
-  page,
-}) => {
-  const input = page.locator('input[type=file]')
-  await input.setInputFiles({
-    name: 'custom.json',
-    mimeType: 'application/json',
-    buffer: Buffer.from(
-      JSON.stringify({
-        title: '사용자 모델',
-        description: '가져온 모델',
-        source: '3x = F',
-        parameters: [
-          { id: 'F', name: 'F', value: 12, min: 0, max: 24, step: 1 },
-        ],
-        sweepName: 'F',
-      }),
-    ),
-  })
-  await expect(page.getByRole('textbox', { name: '모델 이름' })).toHaveValue(
-    '사용자 모델',
-  )
-  await expect(page.locator('.solution-value strong')).toHaveText(['4'])
-  await page.getByRole('slider', { name: 'F 슬라이더' }).fill('6')
-  await expect(page.locator('.solution-value strong')).toHaveText(['2'])
-  await input.setInputFiles({
-    name: 'bad.json',
-    mimeType: 'application/json',
-    buffer: Buffer.from('{"title": false}'),
-  })
-  await expect(page.locator('.toast[role="status"]')).toContainText(
-    '올바른 Polymath 프로젝트 JSON 파일이 아닙니다',
-  )
-  await expect(page.locator('.solution-value strong')).toHaveText(['2'])
-})
-
-test('parameters can be added, bounded, adjusted and deleted', async ({
-  page,
-}) => {
-  await openExample(page, '처음 만나는 연립방정식')
-  await page.getByRole('button', { name: '파라미터 추가', exact: true }).click()
-  const dialog = page.getByRole('dialog')
-  await dialog.getByLabel('이름', { exact: true }).fill('k')
-  await dialog.getByLabel('현재 값', { exact: true }).fill('2')
-  await dialog
-    .getByRole('button', { name: '파라미터 추가', exact: true })
-    .click()
-  await expect(dialog).not.toBeVisible()
-  await page.getByRole('textbox', { name: '방정식 입력' }).fill('k*x = 10')
-  await expect(page.locator('.solution-value strong')).toHaveText(['5'])
-  await page
-    .getByRole('button', { name: '파라미터 범위 설정', exact: true })
-    .click()
-  await page
-    .getByRole('spinbutton', { name: 'k 최솟값', exact: true })
-    .fill('1')
-  await page
-    .getByRole('spinbutton', { name: 'k 최댓값', exact: true })
-    .fill('4')
-  await page
-    .getByRole('spinbutton', { name: 'k 간격', exact: true })
-    .fill('0.5')
-  await page.getByRole('button', { name: 'k 범위 적용', exact: true }).click()
-  const slider = page.getByRole('slider', { name: 'k 슬라이더', exact: true })
-  await expect(slider).toHaveAttribute('min', '1')
-  await expect(slider).toHaveAttribute('step', '0.5')
-  await slider.fill('4')
-  await expect(page.locator('.solution-value strong')).toHaveText(['2.5'])
-  await page.getByRole('button', { name: 'k 삭제', exact: true }).click()
-  await expect(slider).not.toBeVisible()
-  await expect(page.getByRole('alert')).toContainText(
-    '미지수 2개가 일치해야 합니다',
-  )
-})
-
-test('dependent and inconsistent systems provide distinct diagnostics', async ({
-  page,
-}) => {
-  const editor = page.getByRole('textbox', { name: '방정식 입력' })
-  await editor.fill('x + y = 4\n2x + 2y = 8')
-  await expect(page.getByRole('alert')).toContainText(
-    '독립적인 수식이 부족하거나',
-  )
-  await editor.fill('x + y = 4\n2x + 2y = 9')
-  await expect(page.getByRole('alert')).toContainText(
-    '서로 모순되는 수식으로 해가 없습니다',
-  )
-  await editor.fill('x + y = 4\nx - y = 2')
-  await ready(page)
-  await expect(page.locator('.solution-value strong')).toHaveText(['3', '1'])
-})
-
-test('dataset uses the configured interval while the graph keeps its own resolution', async ({
-  page,
-}) => {
-  const rows = page.locator('.sweep-table tbody tr')
-  await expect(rows).toHaveCount(61)
-  await expect(rows.nth(0).locator('td')).toHaveText(['0.2', '100', '0'])
-  await expect(rows.nth(1).locator('td').first()).toHaveText('0.21')
-  await expect(rows.nth(2).locator('td').first()).toHaveText('0.22')
-  await expect(rows.last().locator('td')).toHaveText(['0.8', '0', '100'])
-  await expect(page.locator('.sample-count')).toHaveCount(0)
-  await page
-    .getByRole('button', { name: '파라미터 범위 설정', exact: true })
-    .click()
-  await page
-    .getByRole('spinbutton', { name: 'c_T 간격', exact: true })
-    .fill('0.05')
-  await page.getByRole('button', { name: 'c_T 범위 적용', exact: true }).click()
-  await expect(rows).toHaveCount(13)
-  await expect(rows.nth(1).locator('td').first()).toHaveText('0.25')
-  await expect(rows.last().locator('td').first()).toHaveText('0.8')
-  await ready(page)
-  await expect(page.locator('.sample-count')).toHaveCount(0)
-  const download = page.waitForEvent('download')
-  await page.getByRole('button', { name: 'CSV', exact: true }).click()
-  const file = await download
-  const csv = await readFile((await file.path())!, 'utf8')
-  const lines = csv
-    .replace(/^\uFEFF/, '')
-    .trim()
-    .split('\n')
-  expect(lines).toHaveLength(14)
-  const values = lines.slice(1).map((line) => Number(line.split(',')[0]))
-  expect(values).toEqual([
-    0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8,
-  ])
-})
-
-async function importStepModel(page: Page, step: number) {
-  await page.locator('input[type=file]').setInputFiles({
-    name: 'step-model.json',
-    mimeType: 'application/json',
-    buffer: Buffer.from(
-      JSON.stringify({
-        title: '간격 확인 모델',
-        description: '탐색 간격 검증',
-        source: 'x = p',
-        parameters: [{ id: 'p', name: 'p', value: 0.5, min: 0, max: 1, step }],
-        sweepName: 'p',
-      }),
-    ),
-  })
-  await expect(page.getByRole('textbox', { name: '모델 이름' })).toHaveValue(
-    '간격 확인 모델',
-  )
-  await ready(page)
-  await expect(page.locator('.solution-value strong')).toHaveText(['0.5'])
-}
-
-test('nondivisible intervals include the maximum once with exact CSV values', async ({
-  page,
-}) => {
-  await importStepModel(page, 0.3)
-  const rows = page.locator('.sweep-table tbody tr')
-  await expect(rows).toHaveCount(5)
-  await expect(rows.locator('td:first-child')).toHaveText([
-    '0',
-    '0.3',
-    '0.6',
-    '0.9',
-    '1',
-  ])
-  const download = page.waitForEvent('download')
-  await page.getByRole('button', { name: 'CSV', exact: true }).click()
-  const file = await download
-  const csv = await readFile((await file.path())!, 'utf8')
-  const values = csv
-    .replace(/^\uFEFF/, '')
-    .trim()
-    .split('\n')
-    .slice(1)
-    .map((line) => line.split(',').map(Number))
-  expect(values).toEqual([
-    [0, 0],
-    [0.3, 0.3],
-    [0.6, 0.6],
-    [0.9, 0.9],
-    [1, 1],
-  ])
-})
-
-test('too many dataset rows are explained without changing interval or breaking the graph', async ({
-  page,
-}) => {
-  await importStepModel(page, 0.00001)
-  await expect(page.getByRole('alert')).toContainText(/2,?000/)
-  await expect(page.locator('.solution-value strong')).toHaveText(['0.5'])
-  await expect(page.locator('.sc-curve')).toHaveCount(1)
-  await expect(
-    page.getByRole('button', { name: 'CSV', exact: true }),
-  ).toBeDisabled()
-  await expect(
-    page.getByRole('slider', { name: 'p 슬라이더' }),
-  ).toHaveAttribute('step', '0.00001')
-  await expect(page.locator('.sweep-table tbody tr')).toHaveCount(0)
-})
-
-async function importConditionModel(
-  page: Page,
-  source: string,
-  conditionNorm?: 'infinity' | '2',
-) {
-  await page.locator('input[type=file]').setInputFiles({
-    name: 'condition-model.json',
-    mimeType: 'application/json',
-    buffer: Buffer.from(
-      JSON.stringify({
-        title: '조건수 확인 모델',
-        description: '선택한 norm의 조건수와 민감도를 검증합니다.',
-        source,
-        parameters: [],
-        sweepName: '',
-        ...(conditionNorm ? { conditionNorm } : {}),
-      }),
-    ),
-  })
-  await expect(page.getByRole('textbox', { name: '모델 이름' })).toHaveValue(
-    '조건수 확인 모델',
-  )
-  await expect(page.getByRole('textbox', { name: '방정식 입력' })).toHaveValue(
-    source,
-  )
-  await ready(page)
+  await expect(page.locator('.result-footer')).toContainText('계산 완료')
 }
 
 async function conditionValue(page: Page) {
@@ -412,119 +37,947 @@ async function conditionValue(page: Page) {
   )
 }
 
-test('selected 2-norm uses singular values, preserves solutions and records the chosen definition', async ({
-  page,
-}) => {
-  await importConditionModel(page, 'x + y = 2\ny = 1')
-  await page.getByRole('button', { name: '해석 리포트' }).click()
-  const selector = page.getByRole('combobox', { name: '조건수 계산 방식' })
-  await expect(selector).toHaveValue('infinity')
-  await expect.poll(() => conditionValue(page)).toBe(4)
-  await expect(page.locator('.solution-value strong')).toHaveText(['1', '1'])
-  await selector.selectOption('2')
-  await expect
-    .poll(() => conditionValue(page))
-    .toBeCloseTo((3 + Math.sqrt(5)) / 2, 4)
-  await ready(page)
-  await expect(page.locator('.solution-value strong')).toHaveText(['1', '1'])
-  await expect(
-    page.locator('.report-content .condition-badge'),
-  ).toHaveAttribute('data-level', 'stable')
-  await expect(page.locator('.report-content .condition-badge')).toContainText(
-    '안정',
-  )
-  const reportEvent = page.waitForEvent('download')
-  await page.getByRole('button', { name: '리포트 저장' }).click()
-  const report = await reportEvent
-  const reportText = await readFile((await report.path())!, 'utf8')
-  expect(reportText).toContain('2-norm')
-  expect(reportText).toContain('안정')
-  const projectEvent = page.waitForEvent('download')
-  await page.getByRole('button', { name: '프로젝트 저장' }).click()
-  const file = await projectEvent
-  const savedProjectText = await readFile((await file.path())!, 'utf8')
-  expect(JSON.parse(savedProjectText).conditionNorm).toBe('2')
-  await page.reload()
-  await ready(page)
-  await page.getByRole('button', { name: '해석 리포트' }).click()
-  await expect(selector).toHaveValue('2')
-  await expect
-    .poll(() => conditionValue(page))
-    .toBeCloseTo((3 + Math.sqrt(5)) / 2, 4)
-  await selector.selectOption('infinity')
-  await expect.poll(() => conditionValue(page)).toBe(4)
+const STORAGE_KEY = 'polymath-studio-project-v1'
+const MIXING_PROJECT = {
+  title: '두 유체의 혼합 공정',
+  description: '선형 회귀 검증용 물질수지 모델',
+  source: '# 전체 유량과 성분 물질수지\nx + y = F\nc_A*x + c_B*y = c_T*F',
+  parameters: [
+    { id: 'F', name: 'F', value: 100, min: 20, max: 200, step: 1 },
+    { id: 'c_A', name: 'c_A', value: 0.2, min: 0, max: 1, step: 0.01 },
+    { id: 'c_B', name: 'c_B', value: 0.8, min: 0, max: 1, step: 0.01 },
+    { id: 'c_T', name: 'c_T', value: 0.5, min: 0.2, max: 0.8, step: 0.01 },
+  ],
+  sweepName: 'c_T',
+  conditionNorm: 'infinity',
+}
+
+async function importProject(page: Page, project: object) {
   await page.locator('input[type=file]').setInputFiles({
-    name: 'saved-condition.json',
+    name: 'test-project.json',
     mimeType: 'application/json',
-    buffer: Buffer.from(savedProjectText),
+    buffer: Buffer.from(JSON.stringify(project)),
   })
-  await expect(selector).toHaveValue('2')
-  await expect
-    .poll(() => conditionValue(page))
-    .toBeCloseTo((3 + Math.sqrt(5)) / 2, 4)
-  await page.setViewportSize({ width: 390, height: 844 })
-  await expect(selector).toBeVisible()
-  expect(
-    await page.evaluate(
+}
+
+test.describe('Linear regressions with a saved legacy model', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(
+      ({ key, project }) => {
+        if (!localStorage.getItem(key)) {
+          localStorage.setItem(key, JSON.stringify(project))
+        }
+      },
+      { key: STORAGE_KEY, project: MIXING_PROJECT },
+    )
+    await page.goto('/')
+    await ready(page)
+  })
+
+  test('WebAssembly solves mixing model and parameter slider updates live', async ({
+    page,
+  }) => {
+    await expect(page.locator('.solution-value strong')).toHaveText([
+      '50',
+      '50',
+    ])
+    await page.getByRole('slider', { name: 'c_T 슬라이더' }).fill('0.6')
+    await expect(page.locator('.solution-value strong').nth(0)).toHaveText(
+      '33.33333',
+    )
+    await expect(page.locator('.solution-value strong').nth(1)).toHaveText(
+      '66.66667',
+    )
+    await ready(page)
+  })
+
+  test('nonlinear models show errors and corrected equations recover', async ({
+    page,
+  }) => {
+    await page
+      .getByRole('textbox', { name: '방정식 입력' })
+      .fill('x + y = 10\nx*y = 20')
+    await expect(page.getByRole('alert')).toContainText(
+      '미지수끼리의 곱은 선형식이 아닙니다',
+    )
+    await page
+      .getByRole('textbox', { name: '방정식 입력' })
+      .fill('x + y = 10\nx - y = 2')
+    await ready(page)
+    await expect(page.locator('.solution-value strong')).toHaveText(['6', '4'])
+  })
+
+  test('equation editing solves standard shorthand and three-variable systems', async ({
+    page,
+  }) => {
+    await importProject(page, {
+      title: '직접 입력한 연립방정식',
+      description: '',
+      source: '2x + 3y = 12\n4x = 5 + y',
+      parameters: [],
+      sweepName: '',
+    })
+    await ready(page)
+    await expect(page.locator('.solution-value strong')).toHaveText([
+      '1.928571',
+      '2.714286',
+    ])
+    await expect(
+      page.getByRole('button', { name: '예제 불러오기' }),
+    ).toHaveCount(0)
+    await page
+      .getByRole('textbox', { name: '방정식 입력' })
+      .fill('x + y + z = 12\n2x - y + z = 7\nx + 2y - z = 6')
+    await ready(page)
+    await expect(page.locator('.solution-value strong')).toHaveText([
+      '3',
+      '4',
+      '5',
+    ])
+  })
+
+  test('graph exploration and legend are connected to data table', async ({
+    page,
+  }) => {
+    const chart = page.getByRole('img', { name: /c_T에 따른 선형 방정식/ })
+    await chart.focus()
+    await chart.press('Home')
+    await expect(
+      page.locator('.sweep-table tr[aria-selected=true] td'),
+    ).toHaveText(['0.2', '100', '0'])
+    await chart.press('ArrowRight')
+    await expect(
+      page.locator('.sweep-table tr[aria-selected=true] td').first(),
+    ).toHaveText('0.21')
+    await chart.press('End')
+    await expect(
+      page.locator('.sweep-table tr[aria-selected=true] td'),
+    ).toHaveText(['0.8', '0', '100'])
+    const tablePoint = page.getByRole('row', {
+      name: 'c_T 0.35 탐색',
+      exact: true,
+    })
+    await tablePoint.hover()
+    await expect(tablePoint).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('.sc-tooltip-heading strong')).toHaveText('0.35')
+    await tablePoint.focus()
+    await tablePoint.press('ArrowDown')
+    await expect(page.locator('.sc-tooltip-heading strong')).toHaveText('0.36')
+    await page.getByRole('button', { name: 'x 곡선 표시' }).click()
+    await expect(
+      page.getByRole('button', { name: 'x 곡선 표시' }),
+    ).toHaveAttribute('aria-pressed', 'false')
+    await expect(page.locator('.sc-curve')).toHaveCount(1)
+  })
+
+  test('advanced matrix report and exports reflect current results', async ({
+    page,
+  }) => {
+    await expect(page.getByRole('button', { name: '행렬 보기' })).toHaveCount(0)
+    await expect(page.locator('.matrix-equation')).toHaveCount(0)
+    const csv = page.waitForEvent('download')
+    await page.getByRole('button', { name: 'CSV', exact: true }).click()
+    const csvDownload = await csv
+    expect(csvDownload.suggestedFilename()).toBe('polymath-data.csv')
+    const csvText = await readFile((await csvDownload.path())!, 'utf8')
+    expect(csvText.replace(/^\uFEFF/, '').split('\n')[0]).toBe('c_T,x,y')
+    expect(csvText.trim().split('\n')).toHaveLength(62)
+    await page.getByRole('button', { name: '해석 리포트' }).click()
+    await expect(page.locator('.report-metrics')).toContainText(
+      '최대 절대 잔차',
+    )
+    await expect(page.locator('.matrix-equation')).not.toBeVisible()
+    await page.getByText('행렬·수치 검증 자세히 보기', { exact: true }).click()
+    await expect(page.locator('.matrix-equation')).toBeVisible()
+    await expect(page.locator('.matrix-equation')).toContainText('100')
+    const report = page.waitForEvent('download')
+    await page.getByRole('button', { name: '리포트 저장' }).click()
+    const reportDownload = await report
+    expect(reportDownload.suggestedFilename()).toBe('polymath-report.md')
+    const reportText = await readFile((await reportDownload.path())!, 'utf8')
+    expect(reportText).toContain('| x | 50.0000000000 |')
+    expect(reportText).toContain('계산 엔진: wasm')
+    const saved = page.waitForEvent('download')
+    await page.getByRole('button', { name: '프로젝트 저장' }).click()
+    const projectDownload = await saved
+    expect(projectDownload.suggestedFilename()).toBe('polymath-project.json')
+    const projectFile = JSON.parse(
+      await readFile((await projectDownload.path())!, 'utf8'),
+    )
+    expect(
+      projectFile.parameters.find((p: { name: string }) => p.name === 'c_T')
+        .value,
+    ).toBe(0.5)
+  })
+
+  test('local project persists on reload and guide opens accessibly', async ({
+    page,
+  }) => {
+    await page
+      .getByRole('textbox', { name: '모델 이름' })
+      .fill('브라우저 저장 테스트')
+    await page.getByRole('slider', { name: 'F 슬라이더' }).fill('120')
+    await expect(page.locator('.solution-value strong')).toHaveText([
+      '60',
+      '60',
+    ])
+    await page.reload()
+    await ready(page)
+    await expect(page.getByRole('textbox', { name: '모델 이름' })).toHaveValue(
+      '브라우저 저장 테스트',
+    )
+    await expect(page.locator('.solution-value strong')).toHaveText([
+      '60',
+      '60',
+    ])
+    await page
+      .getByRole('button', { name: '사용 가이드', exact: true })
+      .first()
+      .click()
+    await expect(page.getByRole('dialog')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog')).not.toBeVisible()
+  })
+
+  test('desktop and mobile render without horizontal overflow', async ({
+    page,
+  }) => {
+    await page.screenshot({ path: '/tmp/polymath-desktop.png', fullPage: true })
+    const desktopOverflow = await page.evaluate(
       () => document.documentElement.scrollWidth > window.innerWidth,
-    ),
-  ).toBe(false)
-})
-
-test('condition sensitivity labels distinguish stable, sensitive and very sensitive matrices', async ({
-  page,
-}) => {
-  await importConditionModel(page, 'x = 1\n0.001*y = 0.001')
-  await page.getByRole('button', { name: '해석 리포트' }).click()
-  const badge = page.locator('.report-content .condition-badge')
-  await expect(badge).toHaveAttribute('data-level', 'stable')
-  await expect.poll(() => conditionValue(page)).toBe(1000)
-  const editor = page.getByRole('textbox', { name: '방정식 입력' })
-  await editor.fill('x = 1\n0.00001*y = 0.00001')
-  await expect(badge).toHaveAttribute('data-level', 'sensitive')
-  await expect(badge).toContainText('민감')
-  await expect.poll(() => conditionValue(page)).toBe(100000)
-  await editor.fill('x = 1\n0.000000001*y = 0.000000001')
-  await expect(badge).toHaveAttribute('data-level', 'very-sensitive')
-  await expect(badge).toContainText('매우 민감')
-  await expect.poll(() => conditionValue(page)).toBe(1000000000)
-  await page
-    .getByRole('combobox', { name: '조건수 계산 방식' })
-    .selectOption('2')
-  await ready(page)
-  await expect(badge).toHaveAttribute('data-level', 'very-sensitive')
-  await expect(page.locator('.solution-value strong')).toHaveText(['1', '1'])
-})
-
-test('legacy project files default to infinity norm and unsupported norm settings are rejected', async ({
-  page,
-}) => {
-  await page.getByRole('button', { name: '해석 리포트' }).click()
-  const selector = page.getByRole('combobox', { name: '조건수 계산 방식' })
-  await selector.selectOption('2')
-  await ready(page)
-  await importConditionModel(page, 'x + y = 2\ny = 1')
-  await expect(selector).toHaveValue('infinity')
-  await expect.poll(() => conditionValue(page)).toBe(4)
-  await page.locator('input[type=file]').setInputFiles({
-    name: 'bad-condition.json',
-    mimeType: 'application/json',
-    buffer: Buffer.from(
-      JSON.stringify({
-        title: '잘못된 조건수 모델',
-        description: 'invalid norm',
-        source: 'x = 3',
-        parameters: [],
-        sweepName: '',
-        conditionNorm: 'unsupported',
-      }),
-    ),
+    )
+    expect(desktopOverflow).toBe(false)
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.screenshot({ path: '/tmp/polymath-mobile.png', fullPage: true })
+    const mobileOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth,
+    )
+    expect(mobileOverflow).toBe(false)
+    await expect(page.getByRole('button', { name: '모델 풀기' })).toBeVisible()
   })
-  await expect(page.locator('.toast[role="status"]')).toContainText(
-    '올바른 Polymath 프로젝트 JSON 파일이 아닙니다',
-  )
-  await expect(page.getByRole('textbox', { name: '모델 이름' })).toHaveValue(
-    '조건수 확인 모델',
-  )
-  await expect(selector).toHaveValue('infinity')
+
+  test('project import restores a custom model and rejects malformed data', async ({
+    page,
+  }) => {
+    const input = page.locator('input[type=file]')
+    await input.setInputFiles({
+      name: 'custom.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(
+        JSON.stringify({
+          title: '사용자 모델',
+          description: '가져온 모델',
+          source: '3x = F',
+          parameters: [
+            { id: 'F', name: 'F', value: 12, min: 0, max: 24, step: 1 },
+          ],
+          sweepName: 'F',
+        }),
+      ),
+    })
+    await expect(page.getByRole('textbox', { name: '모델 이름' })).toHaveValue(
+      '사용자 모델',
+    )
+    await expect(page.locator('.solution-value strong')).toHaveText(['4'])
+    await page.getByRole('slider', { name: 'F 슬라이더' }).fill('6')
+    await expect(page.locator('.solution-value strong')).toHaveText(['2'])
+    await input.setInputFiles({
+      name: 'bad.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from('{"title": false}'),
+    })
+    await expect(page.locator('.toast[role="status"]')).toContainText(
+      '올바른 Polymath 프로젝트 JSON 파일이 아닙니다',
+    )
+    await expect(page.locator('.solution-value strong')).toHaveText(['2'])
+  })
+
+  test('parameters can be added, bounded, adjusted and deleted', async ({
+    page,
+  }) => {
+    await importProject(page, {
+      title: '파라미터 추가 확인',
+      description: '',
+      source: 'x = 5',
+      parameters: [],
+      sweepName: '',
+    })
+    await ready(page)
+    await page
+      .getByRole('button', { name: '파라미터 추가', exact: true })
+      .click()
+    const dialog = page.getByRole('dialog')
+    await dialog.getByLabel('이름', { exact: true }).fill('k')
+    await dialog.getByLabel('현재 값', { exact: true }).fill('2')
+    await dialog
+      .getByRole('button', { name: '파라미터 추가', exact: true })
+      .click()
+    await expect(dialog).not.toBeVisible()
+    await page.getByRole('textbox', { name: '방정식 입력' }).fill('k*x = 10')
+    await expect(page.locator('.solution-value strong')).toHaveText(['5'])
+    await page
+      .getByRole('button', { name: '파라미터 범위 설정', exact: true })
+      .click()
+    await page
+      .getByRole('spinbutton', { name: 'k 최솟값', exact: true })
+      .fill('1')
+    await page
+      .getByRole('spinbutton', { name: 'k 최댓값', exact: true })
+      .fill('4')
+    await page
+      .getByRole('spinbutton', { name: 'k 간격', exact: true })
+      .fill('0.5')
+    await page.getByRole('button', { name: 'k 범위 적용', exact: true }).click()
+    const slider = page.getByRole('slider', { name: 'k 슬라이더', exact: true })
+    await expect(slider).toHaveAttribute('min', '1')
+    await expect(slider).toHaveAttribute('step', '0.5')
+    await slider.fill('4')
+    await expect(page.locator('.solution-value strong')).toHaveText(['2.5'])
+    await page.getByRole('button', { name: 'k 삭제', exact: true }).click()
+    await expect(slider).not.toBeVisible()
+    await expect(page.getByRole('alert')).toContainText(
+      '미지수 2개가 일치해야 합니다',
+    )
+  })
+
+  test('dependent and inconsistent systems provide distinct diagnostics', async ({
+    page,
+  }) => {
+    const editor = page.getByRole('textbox', { name: '방정식 입력' })
+    await editor.fill('x + y = 4\n2x + 2y = 8')
+    await expect(page.getByRole('alert')).toContainText(
+      '독립적인 수식이 부족하거나',
+    )
+    await editor.fill('x + y = 4\n2x + 2y = 9')
+    await expect(page.getByRole('alert')).toContainText(
+      '서로 모순되는 수식으로 해가 없습니다',
+    )
+    await editor.fill('x + y = 4\nx - y = 2')
+    await ready(page)
+    await expect(page.locator('.solution-value strong')).toHaveText(['3', '1'])
+  })
+
+  test('dataset uses the configured interval while the graph keeps its own resolution', async ({
+    page,
+  }) => {
+    const rows = page.locator('.sweep-table tbody tr')
+    await expect(rows).toHaveCount(61)
+    await expect(rows.nth(0).locator('td')).toHaveText(['0.2', '100', '0'])
+    await expect(rows.nth(1).locator('td').first()).toHaveText('0.21')
+    await expect(rows.nth(2).locator('td').first()).toHaveText('0.22')
+    await expect(rows.last().locator('td')).toHaveText(['0.8', '0', '100'])
+    await expect(page.locator('.sample-count')).toHaveCount(0)
+    await page
+      .getByRole('button', { name: '파라미터 범위 설정', exact: true })
+      .click()
+    await page
+      .getByRole('spinbutton', { name: 'c_T 간격', exact: true })
+      .fill('0.05')
+    await page
+      .getByRole('button', { name: 'c_T 범위 적용', exact: true })
+      .click()
+    await expect(rows).toHaveCount(13)
+    await expect(rows.nth(1).locator('td').first()).toHaveText('0.25')
+    await expect(rows.last().locator('td').first()).toHaveText('0.8')
+    await ready(page)
+    await expect(page.locator('.sample-count')).toHaveCount(0)
+    const download = page.waitForEvent('download')
+    await page.getByRole('button', { name: 'CSV', exact: true }).click()
+    const file = await download
+    const csv = await readFile((await file.path())!, 'utf8')
+    const lines = csv
+      .replace(/^\uFEFF/, '')
+      .trim()
+      .split('\n')
+    expect(lines).toHaveLength(14)
+    const values = lines.slice(1).map((line) => Number(line.split(',')[0]))
+    expect(values).toEqual([
+      0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8,
+    ])
+  })
+
+  async function importStepModel(page: Page, step: number) {
+    await page.locator('input[type=file]').setInputFiles({
+      name: 'step-model.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(
+        JSON.stringify({
+          title: '간격 확인 모델',
+          description: '탐색 간격 검증',
+          source: 'x = p',
+          parameters: [
+            { id: 'p', name: 'p', value: 0.5, min: 0, max: 1, step },
+          ],
+          sweepName: 'p',
+        }),
+      ),
+    })
+    await expect(page.getByRole('textbox', { name: '모델 이름' })).toHaveValue(
+      '간격 확인 모델',
+    )
+    await ready(page)
+    await expect(page.locator('.solution-value strong')).toHaveText(['0.5'])
+  }
+
+  test('nondivisible intervals include the maximum once with exact CSV values', async ({
+    page,
+  }) => {
+    await importStepModel(page, 0.3)
+    const rows = page.locator('.sweep-table tbody tr')
+    await expect(rows).toHaveCount(5)
+    await expect(rows.locator('td:first-child')).toHaveText([
+      '0',
+      '0.3',
+      '0.6',
+      '0.9',
+      '1',
+    ])
+    const download = page.waitForEvent('download')
+    await page.getByRole('button', { name: 'CSV', exact: true }).click()
+    const file = await download
+    const csv = await readFile((await file.path())!, 'utf8')
+    const values = csv
+      .replace(/^\uFEFF/, '')
+      .trim()
+      .split('\n')
+      .slice(1)
+      .map((line) => line.split(',').map(Number))
+    expect(values).toEqual([
+      [0, 0],
+      [0.3, 0.3],
+      [0.6, 0.6],
+      [0.9, 0.9],
+      [1, 1],
+    ])
+  })
+
+  test('too many dataset rows are explained without changing interval or breaking the graph', async ({
+    page,
+  }) => {
+    await importStepModel(page, 0.00001)
+    await expect(page.getByRole('alert')).toContainText(/2,?000/)
+    await expect(page.locator('.solution-value strong')).toHaveText(['0.5'])
+    await expect(page.locator('.sc-curve')).toHaveCount(1)
+    await expect(
+      page.getByRole('button', { name: 'CSV', exact: true }),
+    ).toBeDisabled()
+    await expect(
+      page.getByRole('slider', { name: 'p 슬라이더' }),
+    ).toHaveAttribute('step', '0.00001')
+    await expect(page.locator('.sweep-table tbody tr')).toHaveCount(0)
+  })
+
+  async function importConditionModel(
+    page: Page,
+    source: string,
+    conditionNorm?: 'infinity' | '2',
+  ) {
+    await page.locator('input[type=file]').setInputFiles({
+      name: 'condition-model.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(
+        JSON.stringify({
+          title: '조건수 확인 모델',
+          description: '선택한 norm의 조건수와 민감도를 검증합니다.',
+          source,
+          parameters: [],
+          sweepName: '',
+          ...(conditionNorm ? { conditionNorm } : {}),
+        }),
+      ),
+    })
+    await expect(page.getByRole('textbox', { name: '모델 이름' })).toHaveValue(
+      '조건수 확인 모델',
+    )
+    await expect(
+      page.getByRole('textbox', { name: '방정식 입력' }),
+    ).toHaveValue(source)
+    await ready(page)
+  }
+
+  test('selected 2-norm uses singular values, preserves solutions and records the chosen definition', async ({
+    page,
+  }) => {
+    await importConditionModel(page, 'x + y = 2\ny = 1')
+    await page.getByRole('button', { name: '해석 리포트' }).click()
+    const selector = page.getByRole('combobox', { name: '조건수 계산 방식' })
+    await expect(selector).toHaveValue('infinity')
+    await expect.poll(() => conditionValue(page)).toBe(4)
+    await expect(page.locator('.solution-value strong')).toHaveText(['1', '1'])
+    await selector.selectOption('2')
+    await expect
+      .poll(() => conditionValue(page))
+      .toBeCloseTo((3 + Math.sqrt(5)) / 2, 4)
+    await ready(page)
+    await expect(page.locator('.solution-value strong')).toHaveText(['1', '1'])
+    await expect(
+      page.locator('.report-content .condition-badge'),
+    ).toHaveAttribute('data-level', 'stable')
+    await expect(
+      page.locator('.report-content .condition-badge'),
+    ).toContainText('안정')
+    const reportEvent = page.waitForEvent('download')
+    await page.getByRole('button', { name: '리포트 저장' }).click()
+    const report = await reportEvent
+    const reportText = await readFile((await report.path())!, 'utf8')
+    expect(reportText).toContain('2-norm')
+    expect(reportText).toContain('안정')
+    const projectEvent = page.waitForEvent('download')
+    await page.getByRole('button', { name: '프로젝트 저장' }).click()
+    const file = await projectEvent
+    const savedProjectText = await readFile((await file.path())!, 'utf8')
+    expect(JSON.parse(savedProjectText).conditionNorm).toBe('2')
+    await page.reload()
+    await ready(page)
+    await page.getByRole('button', { name: '해석 리포트' }).click()
+    await expect(selector).toHaveValue('2')
+    await expect
+      .poll(() => conditionValue(page))
+      .toBeCloseTo((3 + Math.sqrt(5)) / 2, 4)
+    await selector.selectOption('infinity')
+    await expect.poll(() => conditionValue(page)).toBe(4)
+    await page.locator('input[type=file]').setInputFiles({
+      name: 'saved-condition.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(savedProjectText),
+    })
+    await expect(selector).toHaveValue('2')
+    await expect
+      .poll(() => conditionValue(page))
+      .toBeCloseTo((3 + Math.sqrt(5)) / 2, 4)
+    await page.setViewportSize({ width: 390, height: 844 })
+    await expect(selector).toBeVisible()
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      ),
+    ).toBe(false)
+  })
+
+  test('condition sensitivity labels distinguish stable, sensitive and very sensitive matrices', async ({
+    page,
+  }) => {
+    await importConditionModel(page, 'x = 1\n0.001*y = 0.001')
+    await page.getByRole('button', { name: '해석 리포트' }).click()
+    const badge = page.locator('.report-content .condition-badge')
+    await expect(badge).toHaveAttribute('data-level', 'stable')
+    await expect.poll(() => conditionValue(page)).toBe(1000)
+    const editor = page.getByRole('textbox', { name: '방정식 입력' })
+    await editor.fill('x = 1\n0.00001*y = 0.00001')
+    await expect(badge).toHaveAttribute('data-level', 'sensitive')
+    await expect(badge).toContainText('민감')
+    await expect.poll(() => conditionValue(page)).toBe(100000)
+    await editor.fill('x = 1\n0.000000001*y = 0.000000001')
+    await expect(badge).toHaveAttribute('data-level', 'very-sensitive')
+    await expect(badge).toContainText('매우 민감')
+    await expect.poll(() => conditionValue(page)).toBe(1000000000)
+    await page
+      .getByRole('combobox', { name: '조건수 계산 방식' })
+      .selectOption('2')
+    await ready(page)
+    await expect(badge).toHaveAttribute('data-level', 'very-sensitive')
+    await expect(page.locator('.solution-value strong')).toHaveText(['1', '1'])
+  })
+
+  test('legacy project files default to infinity norm and unsupported norm settings are rejected', async ({
+    page,
+  }) => {
+    await page.getByRole('button', { name: '해석 리포트' }).click()
+    const selector = page.getByRole('combobox', { name: '조건수 계산 방식' })
+    await selector.selectOption('2')
+    await ready(page)
+    await importConditionModel(page, 'x + y = 2\ny = 1')
+    await expect(selector).toHaveValue('infinity')
+    await expect.poll(() => conditionValue(page)).toBe(4)
+    await page.locator('input[type=file]').setInputFiles({
+      name: 'bad-condition.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(
+        JSON.stringify({
+          title: '잘못된 조건수 모델',
+          description: 'invalid norm',
+          source: 'x = 3',
+          parameters: [],
+          sweepName: '',
+          conditionNorm: 'unsupported',
+        }),
+      ),
+    })
+    await expect(page.locator('.toast[role="status"]')).toContainText(
+      '올바른 Polymath 프로젝트 JSON 파일이 아닙니다',
+    )
+    await expect(page.getByRole('textbox', { name: '모델 이름' })).toHaveValue(
+      '조건수 확인 모델',
+    )
+    await expect(selector).toHaveValue('infinity')
+  })
+})
+
+test.describe('Equation Solver workspace', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/')
+  })
+
+  test('starts with a blank Linear calculator and only offers implemented categories', async ({
+    page,
+  }) => {
+    await expect(
+      page.getByRole('tab', { name: 'Linear', exact: true }),
+    ).toHaveAttribute('aria-selected', 'true')
+    await expect(
+      page.getByRole('tab', { name: 'Nonlinear', exact: true }),
+    ).toBeVisible()
+    await expect(
+      page.getByRole('textbox', { name: '방정식 입력' }),
+    ).toHaveValue('')
+    await expect(
+      page.getByRole('button', { name: '예제 불러오기' }),
+    ).toHaveCount(0)
+    await expect(page.locator('.solution-value strong')).toHaveCount(0)
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(
+      page.getByRole('button', { name: /Differential Equation Solver/ }),
+    ).toBeDisabled()
+    await page.screenshot({
+      path: '/tmp/polymath-equation-linear-empty.png',
+      fullPage: true,
+    })
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.screenshot({
+      path: '/tmp/polymath-equation-linear-empty-mobile.png',
+      fullPage: true,
+    })
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      ),
+    ).toBe(false)
+    await page.setViewportSize({ width: 1440, height: 1100 })
+    await page
+      .getByRole('textbox', { name: '방정식 입력' })
+      .fill('2x + y = 8\nx - y = 1')
+    await ready(page)
+    await expect(page.locator('.solution-value strong')).toHaveText(['3', '2'])
+    await page.getByRole('button', { name: '새 모델', exact: true }).click()
+    await expect(
+      page.getByRole('textbox', { name: '방정식 입력' }),
+    ).toHaveValue('')
+    await expect(page.locator('.solution-value strong')).toHaveCount(0)
+    await expect(page.getByRole('alert')).toHaveCount(0)
+  })
+
+  test('each solver preserves its own draft, and the selected solver survives reload', async ({
+    page,
+  }) => {
+    const editor = page.getByRole('textbox', { name: '방정식 입력' })
+    await page.getByRole('textbox', { name: '모델 이름' }).fill('내 선형 모델')
+    await editor.fill('x = 7')
+    await ready(page)
+    await page.getByRole('tab', { name: 'Nonlinear', exact: true }).click()
+    await expect(editor).toHaveValue('')
+    await expect(
+      page.getByRole('button', { name: '예제 불러오기' }),
+    ).toBeVisible()
+    await page
+      .getByRole('textbox', { name: '모델 이름' })
+      .fill('내 비선형 모델')
+    const nonlinearSource = 'f(x) = x^2 - 4\nx(min) = -3\nx(max) = 0'
+    await editor.fill(nonlinearSource)
+    await expect(page.locator('.solution-value strong')).toHaveText(['-2'])
+    await page.getByRole('tab', { name: 'Linear', exact: true }).click()
+    await expect(editor).toHaveValue('x = 7')
+    await expect(page.getByRole('textbox', { name: '모델 이름' })).toHaveValue(
+      '내 선형 모델',
+    )
+    await expect(page.locator('.solution-value strong')).toHaveText(['7'])
+    await page.getByRole('tab', { name: 'Nonlinear', exact: true }).click()
+    await expect(editor).toHaveValue(nonlinearSource)
+    await page.reload()
+    await expect(
+      page.getByRole('tab', { name: 'Nonlinear', exact: true }),
+    ).toHaveAttribute('aria-selected', 'true')
+    await expect(editor).toHaveValue(nonlinearSource)
+    await expect(page.locator('.solution-value strong')).toHaveText(['-2'])
+    await page.getByRole('tab', { name: 'Linear', exact: true }).click()
+    await expect(editor).toHaveValue('x = 7')
+    await page.getByRole('tab', { name: 'Nonlinear', exact: true }).click()
+    await page.getByRole('button', { name: '새 모델', exact: true }).click()
+    await expect(editor).toHaveValue('')
+    await expect(page.locator('.solution-value strong')).toHaveCount(0)
+    await page.getByRole('tab', { name: 'Linear', exact: true }).click()
+    await expect(editor).toHaveValue('x = 7')
+  })
+
+  test('nonlinear scalar example updates roots and step-based simulation together', async ({
+    page,
+  }) => {
+    await page.getByRole('tab', { name: 'Nonlinear', exact: true }).click()
+    await openExample(page, '제곱식의 양의 근')
+    await expect(page.locator('.solution-value strong')).toHaveText(['2'])
+    await expect(page.locator('.found-badge')).toContainText('수렴')
+    await expect(page.getByText('유일해', { exact: true })).toHaveCount(0)
+    const rows = page.locator('.sweep-table tbody tr')
+    await expect(rows).toHaveCount(25)
+    await expect(rows.nth(0).locator('td')).toHaveText(['1', '1'])
+    await expect(rows.nth(1).locator('td').first()).toHaveText('2')
+    await expect(rows.last().locator('td')).toHaveText(['25', '5'])
+    const closeToast = page.getByRole('button', { name: '알림 닫기' })
+    if (await closeToast.isVisible()) await closeToast.click()
+    await page.screenshot({
+      path: '/tmp/polymath-equation-nonlinear-scalar.png',
+      fullPage: true,
+    })
+    await page
+      .getByRole('slider', { name: 'target 슬라이더', exact: true })
+      .fill('9')
+    await expect(page.locator('.solution-value strong')).toHaveText(['3'])
+    const point = page.getByRole('row', { name: 'target 16 탐색', exact: true })
+    await point.hover()
+    await expect(point).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('.sc-tooltip-heading strong')).toHaveText('16')
+    await page.getByRole('button', { name: '해석 리포트' }).click()
+    await expect(page.locator('.nonlinear-status')).toContainText(/반복 \d+회/)
+    await expect(page.locator('.report-content')).toContainText(/국소|야코비/)
+    await page
+      .getByRole('combobox', { name: '조건수 계산 방식' })
+      .selectOption('2')
+    await expect.poll(() => conditionValue(page)).toBe(1)
+    const reportEvent = page.waitForEvent('download')
+    await page.getByRole('button', { name: '리포트 저장' }).click()
+    const report = await reportEvent
+    const reportText = await readFile((await report.path())!, 'utf8')
+    expect(reportText).toContain('수렴')
+    expect(reportText).toContain('2-norm')
+    expect(reportText).not.toContain('유일해')
+    await page.screenshot({
+      path: '/tmp/polymath-equation-nonlinear-scalar-report.png',
+      fullPage: true,
+    })
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.screenshot({
+      path: '/tmp/polymath-equation-nonlinear-scalar-report-mobile.png',
+      fullPage: true,
+    })
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      ),
+    ).toBe(false)
+  })
+
+  test('NLE0 evaluates named and anonymous expressions without root diagnostics', async ({
+    page,
+  }) => {
+    await page.getByRole('tab', { name: 'Nonlinear', exact: true }).click()
+    await page
+      .getByRole('textbox', { name: '방정식 입력' })
+      .fill('a = 1\nb = 4\nx = a + b^2\nx + 2')
+    await expect(page.locator('.solution-value strong')).toHaveText([
+      '1',
+      '4',
+      '17',
+      '19',
+    ])
+    await expect(page.locator('.found-badge')).toHaveText('계산 완료')
+    await expect(page.locator('.result-footer')).toContainText('계산 완료')
+    await expect(page.locator('.result-footer')).not.toContainText('0 × 4')
+    await expect(page.getByRole('columnheader')).toHaveText(['변수', '값'])
+    await expect(page.locator('.result-table tbody tr')).toHaveCount(4)
+    await expect(page.getByRole('columnheader', { name: /잔차/ })).toHaveCount(
+      0,
+    )
+    await expect(page.locator('.nonlinear-status')).not.toContainText('반복')
+    await page.getByRole('button', { name: '해석 리포트' }).click()
+    await expect(page.locator('.matrix-details')).toHaveCount(0)
+    await expect(page.locator('.condition-value')).toHaveCount(0)
+    await expect(
+      page.getByRole('combobox', { name: '조건수 계산 방식' }),
+    ).toHaveCount(0)
+    await expect(page.locator('.report-content')).not.toContainText('Jacobian')
+    await expect(page.locator('.report-explanation')).toContainText(
+      '명시식의 의존 관계',
+    )
+    await expect(page.getByRole('alert')).toHaveCount(0)
+  })
+
+  test('nonlinear examples demonstrate brackets, starting values, and engineering helpers', async ({
+    page,
+  }) => {
+    await page.getByRole('tab', { name: 'Nonlinear', exact: true }).click()
+    await openExample(page, '같은 식에서 음의 근 찾기')
+    await expect(page.locator('.solution-value strong')).toHaveText(['-2'])
+    await openExample(page, '원과 직선의 교점')
+    await expect(page.locator('.solution-value strong')).toHaveText(['4', '3'])
+    await page.getByRole('button', { name: '해석 리포트' }).click()
+    await page
+      .getByText('Jacobian·수치 검증 자세히 보기', { exact: true })
+      .click()
+    await page.screenshot({
+      path: '/tmp/polymath-equation-nonlinear-system-report.png',
+      fullPage: true,
+    })
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.screenshot({
+      path: '/tmp/polymath-equation-nonlinear-system-report-mobile.png',
+      fullPage: true,
+    })
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      ),
+    ).toBe(false)
+    await page.setViewportSize({ width: 1440, height: 1100 })
+    await page.getByRole('button', { name: /인터랙티브 시뮬레이션/ }).click()
+    await page
+      .getByRole('textbox', { name: '방정식 입력' })
+      .fill('f(x) = x^2 + y^2 - 25\nf(y) = x - y - 1\nx(0) = -3\ny(0) = -4')
+    await expect(page.locator('.solution-value strong')).toHaveText([
+      '-3',
+      '-4',
+    ])
+    await openExample(page, '비선형 물질수지와 평형 농도')
+    await expect
+      .poll(async () =>
+        Number(await page.locator('.solution-value strong').innerText()),
+      )
+      .toBeCloseTo(Math.sqrt(5) - 1, 5)
+    await page
+      .getByRole('slider', { name: 'C0 슬라이더', exact: true })
+      .fill('4')
+    await expect(page.locator('.solution-value strong')).toHaveText(['2'])
+    await openExample(page, '보조식으로 나누어 쓰는 비선형 모델')
+    await expect(page.locator('.solution-value strong')).toHaveText(['20'])
+    await page.screenshot({
+      path: '/tmp/polymath-nonlinear-desktop.png',
+      fullPage: true,
+    })
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.screenshot({
+      path: '/tmp/polymath-nonlinear-mobile.png',
+      fullPage: true,
+    })
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      ),
+    ).toBe(false)
+    await expect(
+      page.getByRole('tab', { name: 'Nonlinear', exact: true }),
+    ).toBeVisible()
+    await expect(page.getByRole('button', { name: '모델 풀기' })).toBeVisible()
+  })
+
+  test('nonlinear invalid bounds, missing guesses, domain errors and failed roots recover after editing', async ({
+    page,
+  }) => {
+    await page.getByRole('tab', { name: 'Nonlinear', exact: true }).click()
+    const editor = page.getByRole('textbox', { name: '방정식 입력' })
+    for (const [source, diagnostic] of [
+      ['f(x) = x^2 - 4', '경계를 모두 입력하세요'],
+      ['f(x) = x^2 + y^2 - 25\nf(y) = x - y - 1', '초기값을 입력하세요'],
+      ['f(x) = ln(x)\nx(min) = -2\nx(max) = -1', '실수 범위를 벗어났습니다'],
+      ['f(x) = x^2 + 1\nx(min) = -3\nx(max) = 3', '부호가 같습니다'],
+      [
+        'f(x) = x^2 + 1\nf(y) = y^2 + 1\nx(0) = 0\ny(0) = 0',
+        'Jacobian이 특이하거나',
+      ],
+    ]) {
+      await editor.fill(source)
+      await expect(page.getByRole('alert')).toContainText(diagnostic)
+      await expect(page.locator('.solution-value strong')).toHaveCount(0)
+    }
+    await editor.fill('f(x) = x^2 - 4\nx(min) = 0\nx(max) = 3')
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(page.locator('.solution-value strong')).toHaveText(['2'])
+  })
+
+  test('nonlinear simulation retains failed points without inventing roots in the table or CSV', async ({
+    page,
+  }) => {
+    await importProject(page, {
+      mode: 'nonlinear',
+      title: '근이 사라지는 탐색',
+      description: '',
+      source: 'f(x) = x^2 - p\n x(min) = 0\n x(max) = 1',
+      parameters: [
+        { id: 'p', name: 'p', value: 0.25, min: -1, max: 2, step: 0.5 },
+      ],
+      sweepName: 'p',
+    })
+    await expect(page.locator('.solution-value strong')).toHaveText(['0.5'])
+    const rows = page.locator('.sweep-table tbody tr')
+    await expect(rows).toHaveCount(7)
+    await expect(rows.nth(0).locator('td')).toHaveText(['-1', '해 없음'])
+    await expect(rows.nth(2).locator('td')).toHaveText(['0', '0'])
+    await expect(rows.nth(4).locator('td')).toHaveText(['1', '1'])
+    await expect(rows.last().locator('td')).toHaveText(['2', '해 없음'])
+    await expect(rows.nth(0).locator('td').last()).toHaveAttribute(
+      'title',
+      /.+/,
+    )
+    const csvEvent = page.waitForEvent('download')
+    await page.getByRole('button', { name: 'CSV', exact: true }).click()
+    const file = await csvEvent
+    const text = (await readFile((await file.path())!, 'utf8'))
+      .replace(/^\uFEFF/, '')
+      .trim()
+    expect(text.split('\n')).toHaveLength(8)
+    expect(text.split('\n')[1]).toBe('-1,')
+    expect(text.split('\n').at(-1)).toBe('2,')
+    const editor = page.getByRole('textbox', { name: '방정식 입력' })
+    await editor.fill(
+      'f(x) = x^2 - 4\nx(min) = 0\nx(max) = 3\n#@method=constrained',
+    )
+    await expect(page.getByRole('alert')).toContainText(
+      '아직 지원하지 않습니다',
+    )
+    await expect(page.locator('.solution-value strong')).toHaveCount(0)
+  })
+
+  test('project JSON keeps the nonlinear mode and accepts legacy Linear projects', async ({
+    page,
+  }) => {
+    await page.getByRole('tab', { name: 'Nonlinear', exact: true }).click()
+    await openExample(page, '제곱식의 양의 근')
+    await page
+      .getByRole('slider', { name: 'target 슬라이더', exact: true })
+      .fill('16')
+    await expect(page.locator('.solution-value strong')).toHaveText(['4'])
+    const savedEvent = page.waitForEvent('download')
+    await page.getByRole('button', { name: '프로젝트 저장' }).click()
+    const file = await savedEvent
+    const saved = JSON.parse(await readFile((await file.path())!, 'utf8'))
+    expect(saved.mode).toBe('nonlinear')
+    expect(saved.parameters[0].value).toBe(16)
+    await page.getByRole('tab', { name: 'Linear', exact: true }).click()
+    await importProject(page, saved)
+    await expect(
+      page.getByRole('tab', { name: 'Nonlinear', exact: true }),
+    ).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('.solution-value strong')).toHaveText(['4'])
+    await importProject(page, {
+      title: '이전 선형 파일',
+      description: '',
+      source: '3x = 12',
+      parameters: [],
+      sweepName: '',
+    })
+    await expect(
+      page.getByRole('tab', { name: 'Linear', exact: true }),
+    ).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('.solution-value strong')).toHaveText(['4'])
+    await expect(
+      page.getByRole('button', { name: '예제 불러오기' }),
+    ).toHaveCount(0)
+    await importProject(page, { ...saved, mode: 'unsupported' })
+    await expect(page.locator('.toast[role="status"]')).toContainText(
+      '올바른 Polymath 프로젝트 JSON 파일이 아닙니다',
+    )
+    await expect(
+      page.getByRole('tab', { name: 'Linear', exact: true }),
+    ).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('textbox', { name: '모델 이름' })).toHaveValue(
+      '이전 선형 파일',
+    )
+  })
 })

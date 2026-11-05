@@ -21,6 +21,10 @@ export type Parameter = {
 }
 export type ModelInput = { source: string; parameters: Record<string, number> }
 export type SolveResult = {
+  kind?: 'linear' | 'nonlinear' | 'evaluation'
+  iterations?: number
+  method?: string
+  auxiliary?: Record<string, number>
   variables: string[]
   values: number[]
   matrix: number[][]
