@@ -9,7 +9,11 @@ import {
   vi,
 } from 'vitest'
 import { createAutomaticSolver } from '../src/engine/automatic'
-import { computeBranchSweeps, type NearSolver } from '../src/engine/branches'
+import {
+  computeBranchSweeps,
+  continueRoot,
+  type NearSolver,
+} from '../src/engine/branches'
 import type { SolveResult } from '../src/engine'
 
 function root(value: number): SolveResult {
@@ -134,6 +138,137 @@ describe('selected real-root continuation', () => {
     }
   })
 
+  const periodicPhases = [
+    0,
+    Math.PI / 2,
+    -13 * Math.PI,
+    -13 * Math.PI + Math.PI / 2,
+    13 * Math.PI,
+    -26 * Math.PI,
+    26 * Math.PI,
+  ]
+  it.each(periodicPhases)(
+    'keeps the analytic periodic family at x=%s, including folds and missing real roots',
+    (phase) => {
+      const source = 'sin(x)*cos(x)=target'
+      const sign = Math.cos(2 * phase) > 0 ? 1 : -1
+      const expected = (target: number) =>
+        phase + (sign * Math.asin(2 * target)) / 2
+      const parameters = { target: 0.25 }
+      const selected = search.solveNear(source, parameters, [expected(0.25)])
+      for (const [min, max] of [
+        [0, 1],
+        [-0.5, 0.5],
+        [-1, 1],
+      ]) {
+        const result = computeBranchSweeps(
+          search.solveNear,
+          source,
+          parameters,
+          { name: 'target', min, max, step: 0.025, steps: 81 },
+          selected,
+        )
+        for (const point of [...result.sweep, ...result.dataset]) {
+          if (Math.abs(point.parameter) > 0.5 + 1e-14) {
+            expect(point.values).toBeNull()
+            expect(point.error).toContain('분기')
+          } else {
+            expect(point.error).toBeUndefined()
+            expect(point.values?.[0]).toBeCloseTo(expected(point.parameter), 6)
+            expect(
+              Math.abs(
+                Math.sin(point.values![0]) * Math.cos(point.values![0]) -
+                  point.parameter,
+              ),
+            ).toBeLessThan(1e-9)
+          }
+        }
+      }
+    },
+  )
+
+  it.each([1e-12, 1e9])('preserves valid branches at the scale %s', (scale) => {
+    const source = 'x=scale*p'
+    const parameters = { scale, p: 0.6 }
+    const result = computeBranchSweeps(
+      search.solveNear,
+      source,
+      parameters,
+      { name: 'p', min: -1, max: 1, step: 0.4, steps: 6 },
+      search(source, parameters).solutions[0],
+    )
+    for (const point of [...result.sweep, ...result.dataset]) {
+      expect(point.error).toBeUndefined()
+      expect(point.values![0] / scale).toBeCloseTo(point.parameter, 8)
+    }
+  })
+
+  it.each([1e-12, 40])(
+    'rejects same-sign branch jumps at the scale %s',
+    (offset) => {
+      const near: NearSolver = (_source, parameters) =>
+        root(parameters.p < 0.5 ? offset : offset * 1.05)
+      const result = computeBranchSweeps(
+        near,
+        'periodic model',
+        { p: 1 },
+        { name: 'p', min: 0, max: 1, step: 0.25, steps: 5 },
+        root(offset * 1.05),
+      )
+      expect(result.dataset.map((point) => point.values?.[0] ?? null)).toEqual([
+        null,
+        null,
+        offset * 1.05,
+        offset * 1.05,
+        offset * 1.05,
+      ])
+    },
+  )
+
+  it('does not reconnect a branch after a pole or a region without real roots', () => {
+    for (const source of ['x=1/p', 'x^2=p*(p-1)']) {
+      const parameters = { p: 2 }
+      const result = computeBranchSweeps(
+        search.solveNear,
+        source,
+        parameters,
+        { name: 'p', min: -1, max: 2, step: 0.25, steps: 13 },
+        search(source, parameters).solutions[0],
+      )
+      for (const point of result.dataset) {
+        if (source === 'x=1/p' ? point.parameter <= 0 : point.parameter < 1)
+          expect(point.values).toBeNull()
+        else expect(point.error).toBeUndefined()
+      }
+    }
+  })
+
+  it('continues pinned roots through all parameter changes and computes final diagnostics', () => {
+    const source = 'x^2=a+b'
+    const origin = { a: 2, b: 2 }
+    const selected = search(source, origin).solutions.find(
+      (result) => result.values[0] < 0,
+    )!
+    const continued = continueRoot(
+      search.solveNear,
+      source,
+      origin,
+      { a: 5, b: 4 },
+      selected,
+      { conditionNorm: '2' },
+    )
+    expect(continued.values[0]).toBeCloseTo(-3, 9)
+    expect(continued.condition).toBe(1)
+    expect(continued.conditionNorm).toBe('2')
+    expect(
+      continueRoot(search.solveNear, source, origin, origin, selected)
+        .condition,
+    ).toBe(1)
+    expect(() =>
+      continueRoot(search.solveNear, source, origin, { a: 2, c: 2 }, selected),
+    ).toThrow('파라미터')
+  })
+
   it('subdivides parameter steps when a local solver cannot reach the next sample', () => {
     const near: NearSolver = (_source, parameters, seed) => {
       const value = Array.isArray(seed) ? seed[0] : seed.values[0]
@@ -202,7 +337,9 @@ describe('selected real-root continuation', () => {
       },
       root(0),
     )
-    expect(near).toHaveBeenCalledTimes(2)
+    // The shared last endpoint needs only one forward correction. Reverse
+    // validation can make additional calls at previously visited parameters.
+    expect(near.mock.calls.filter((call) => call[1].p === 1)).toHaveLength(1)
     expect(result.dataset[0]).toBe(result.sweep[0])
     expect(result.dataset[1]).toBe(result.sweep[1])
     expect(result.dataset[2]).toBe(result.sweep[2])

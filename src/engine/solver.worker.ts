@@ -4,11 +4,13 @@ import {
   ModelError,
   type SolvePayload,
   type ConditionNorm,
+  type SimulationAnchor,
 } from './index'
 import { computeSweeps, type SweepSettings } from './sweep'
 import { createNonlinearSolver } from './nonlinear'
 import { createAutomaticSolver, type AutomaticSearchResult } from './automatic'
 import { computeBranchSweeps } from './branches'
+import { createSimulationPanelComputer } from './simulation-panels'
 type Request = {
   id: number
   source: string
@@ -19,11 +21,13 @@ type Request = {
   nonlinearSearch?: 'auto' | 'manual'
   searchBounds?: { min: number; max: number }
   solutionIndex?: number
+  simulationAnchors?: SimulationAnchor[]
 }
 const ready = createSolver()
 const nonlinearReady = createNonlinearSolver()
 let automaticReady: ReturnType<typeof createAutomaticSolver> | undefined
 const searches = new Map<string, AutomaticSearchResult>()
+let computePanels: ReturnType<typeof createSimulationPanelComputer> | undefined
 let pendingRequest: Request | undefined
 let processing = false
 
@@ -59,6 +63,7 @@ async function handleRequest(request: Request) {
     nonlinearSearch,
     searchBounds,
     solutionIndex,
+    simulationAnchors,
   } = request
   try {
     if (mode === 'nonlinear' && nonlinearSearch !== 'manual') {
@@ -77,6 +82,16 @@ async function handleRequest(request: Request) {
         if (searches.size >= 8) searches.delete(searches.keys().next().value!)
         searches.set(key, found)
       }
+      computePanels ??= createSimulationPanelComputer(search.solveNear)
+      const simulations = simulationAnchors
+        ? computePanels(
+            source,
+            parameters,
+            sweep,
+            simulationAnchors,
+            conditionNorm,
+          )
+        : undefined
       if (!found.solutions.length) {
         self.postMessage({
           id,
@@ -84,6 +99,7 @@ async function handleRequest(request: Request) {
           error:
             '자동 탐색 범위에서 실수 해를 찾지 못했습니다. 수식을 확인하거나 고급 설정에서 탐색 범위를 조정해 주세요. 일반적인 수치 탐색은 모든 실수 해의 존재 여부를 판정하지 못합니다.',
           search: found.search,
+          ...(simulations ? { simulations } : {}),
         })
         return
       }
@@ -97,6 +113,7 @@ async function handleRequest(request: Request) {
         solutions: found.solutions,
         selectedSolution,
         search: found.search,
+        ...(simulations ? { simulations } : {}),
         ...computeBranchSweeps(
           search.solveNear,
           source,

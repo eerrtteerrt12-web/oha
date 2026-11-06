@@ -1,7 +1,13 @@
 .solution-chart {
   width: 100%;
+  max-width: 680px;
   min-width: 0;
+  margin-inline: auto;
   color: #243d37;
+}
+
+.solution-chart.is-expanded {
+  max-width: 1200px;
 }
 
 .sc-legend-row {

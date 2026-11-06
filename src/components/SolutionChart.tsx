@@ -8,11 +8,13 @@ import {
   type PointerEvent,
 } from 'react'
 import './SolutionChart.css'
+import { fittedDomain, fraction, interpolate } from './chart-domain'
 
 type ChartPoint = { parameter: number; values: number[] | null; error?: string }
 
 export interface SolutionChartProps {
   modelKind?: 'linear' | 'nonlinear'
+  expanded?: boolean
   points: ChartPoint[]
   selectionPoints?: ChartPoint[]
   variables: string[]
@@ -35,10 +37,10 @@ export const SERIES_COLORS = [
 ]
 
 const MAX_WIDTH = 680
+const EXPANDED_MAX_WIDTH = 1200
 const MIN_WIDTH = 320
 const HEIGHT = 290
 const PLOT = { left: 51, right: 20, top: 24, bottom: 37 }
-const INNER_HEIGHT = HEIGHT - PLOT.top - PLOT.bottom
 
 function formatNumber(value: number): string {
   if (!Number.isFinite(value)) return '—'
@@ -57,63 +59,9 @@ function axisNumber(value: number): string {
   return Number(value.toPrecision(4)).toString()
 }
 
-// Normalize before subtraction so opposite large values cannot overflow a span.
-function fraction(value: number, min: number, max: number): number {
-  const scale = Math.max(Math.abs(min), Math.abs(max))
-  if (!scale || min === max) return 0.5
-  return (value / scale - min / scale) / (max / scale - min / scale)
-}
-
-function interpolate(min: number, max: number, ratio: number): number {
-  return min * (1 - ratio) + max * ratio
-}
-
-function niceDomain(values: number[]): [number, number, number[]] {
-  if (!values.length) return [0, 1, [0, 0.25, 0.5, 0.75, 1]]
-  let min = Math.min(0, ...values)
-  let max = Math.max(0, ...values)
-  if (max === min) return [0, 1, [0, 0.25, 0.5, 0.75, 1]]
-  const fallback = (): [number, number, number[]] => [
-    min,
-    max,
-    [
-      ...new Set(
-        Array.from({ length: 5 }, (_, index) =>
-          interpolate(min, max, index / 4),
-        ),
-      ),
-    ],
-  ]
-  const rawStep = max / 4 - min / 4
-  if (!Number.isFinite(rawStep) || rawStep <= 0) return fallback()
-  const magnitude = 10 ** Math.floor(Math.log10(rawStep))
-  if (!Number.isFinite(magnitude) || magnitude === 0) return fallback()
-  const factor = rawStep / magnitude
-  const step =
-    (factor <= 1
-      ? 1
-      : factor <= 2
-        ? 2
-        : factor <= 2.5
-          ? 2.5
-          : factor <= 5
-            ? 5
-            : 10) * magnitude
-  if (!Number.isFinite(step) || step <= 0) return fallback()
-  const roundedMin = Math.floor(min / step) * step
-  const roundedMax = Math.ceil(max / step) * step
-  if (Number.isFinite(roundedMin)) min = roundedMin
-  if (Number.isFinite(roundedMax)) max = roundedMax
-  const count = Math.round(max / step - min / step)
-  if (!Number.isFinite(count) || count < 1 || count > 20) return fallback()
-  const ticks = Array.from({ length: count + 1 }, (_, index) =>
-    interpolate(min, max, index / count),
-  )
-  return [min, max, ticks]
-}
-
 export default function SolutionChart({
   modelKind = 'linear',
+  expanded = false,
   points,
   selectionPoints,
   variables,
@@ -129,10 +77,14 @@ export default function SolutionChart({
   const descriptionId = useId()
   const containerRef = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(MAX_WIDTH)
+  const height = expanded ? Math.min(520, Math.max(420, width * 0.48)) : HEIGHT
   const innerWidth = width - PLOT.left - PLOT.right
+  const innerHeight = height - PLOT.top - PLOT.bottom
   // Plot resolution is independent of the user-defined dataset interval.
   // Exploration uses dataset rows so graph and table share exact solve points.
   const interactivePoints = selectionPoints?.length ? selectionPoints : points
+  const selectedPoint =
+    selectedIndex !== null ? interactivePoints[selectedIndex] : undefined
 
   useEffect(() => {
     const container = containerRef.current
@@ -140,7 +92,10 @@ export default function SolutionChart({
     const updateWidth = (measuredWidth: number) => {
       if (Number.isFinite(measuredWidth) && measuredWidth > 0) {
         setWidth(
-          Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.round(measuredWidth))),
+          Math.min(
+            expanded ? EXPANDED_MAX_WIDTH : MAX_WIDTH,
+            Math.max(MIN_WIDTH, Math.round(measuredWidth)),
+          ),
         )
       }
     }
@@ -151,7 +106,7 @@ export default function SolutionChart({
     })
     observer.observe(container)
     return () => observer.disconnect()
-  }, [])
+  }, [expanded])
 
   const visible = variables
     .map((name, index) => ({ name, index }))
@@ -181,13 +136,36 @@ export default function SolutionChart({
           values.push(value)
       })
     })
-    currentValues?.forEach((value, index) => {
-      if (visibleVariables.includes(variables[index]) && Number.isFinite(value))
-        values.push(value)
-    })
-    const [minY, maxY, yTicks] = niceDomain(values)
+    const includeValues = (
+      parameter: number,
+      extraValues?: number[] | null,
+    ) => {
+      if (!Number.isFinite(parameter) || parameter < minX || parameter > maxX)
+        return
+      extraValues?.forEach((value, index) => {
+        if (
+          visibleVariables.includes(variables[index]) &&
+          Number.isFinite(value)
+        )
+          values.push(value)
+      })
+    }
+    // Dataset samples and the exact current solve need not coincide with the
+    // graph's sampling grid. Fit the markers as well as the sampled curves.
+    if (selectedIndex === null) includeValues(currentParameter, currentValues)
+    if (selectedPoint)
+      includeValues(selectedPoint.parameter, selectedPoint.values)
+    const [minY, maxY, yTicks] = fittedDomain(values)
     return { minX, maxX, minY, maxY, yTicks, hasData: values.length > 0 }
-  }, [points, variables, visibleVariables, currentValues])
+  }, [
+    points,
+    variables,
+    visibleVariables,
+    currentValues,
+    currentParameter,
+    selectedIndex,
+    selectedPoint,
+  ])
 
   const nearest = (value: number) => {
     if (!chart) return -1
@@ -217,13 +195,19 @@ export default function SolutionChart({
     PLOT.left + fraction(value, chart!.minX, chart!.maxX) * innerWidth
   const y = (value: number) =>
     PLOT.top +
-    INNER_HEIGHT -
-    fraction(value, chart!.minY, chart!.maxY) * INNER_HEIGHT
+    innerHeight -
+    fraction(value, chart!.minY, chart!.maxY) * innerHeight
   const currentInDomain =
     chart &&
     Number.isFinite(currentParameter) &&
     currentParameter >= chart.minX &&
     currentParameter <= chart.maxX
+  const selectedInDomain =
+    chart &&
+    activePoint &&
+    Number.isFinite(activePoint.parameter) &&
+    activePoint.parameter >= chart.minX &&
+    activePoint.parameter <= chart.maxX
 
   function handlePointer(event: PointerEvent<SVGSVGElement>) {
     if (!chart) return
@@ -275,10 +259,15 @@ export default function SolutionChart({
     ? '모델을 계산하면 파라미터에 따른 해의 변화를 볼 수 있어요.'
     : !visible.length
       ? '위의 변수 이름을 눌러 그래프에 표시해 보세요.'
-      : '이 범위에는 유일한 해가 없어요. 파라미터 범위를 조절해 보세요.'
+      : modelKind === 'nonlinear'
+        ? '이 범위에는 선택한 해의 유효한 계산 결과가 없어요. 파라미터 범위를 조절해 보세요.'
+        : '이 범위에는 유일한 해가 없어요. 파라미터 범위를 조절해 보세요.'
 
   return (
-    <div className="solution-chart" ref={containerRef}>
+    <div
+      className={`solution-chart${expanded ? ' is-expanded' : ''}`}
+      ref={containerRef}
+    >
       <div className="sc-legend-row">
         <div className="sc-legend" aria-label="그래프에 표시할 변수">
           {variables.map((name, index) => (
@@ -305,7 +294,7 @@ export default function SolutionChart({
 
       <div className="sc-stage">
         <svg
-          viewBox={`0 0 ${width} ${HEIGHT}`}
+          viewBox={`0 0 ${width} ${height}`}
           role="img"
           tabIndex={0}
           aria-labelledby={`${titleId} ${descriptionId}`}
@@ -357,12 +346,12 @@ export default function SolutionChart({
                       x1={x(tick)}
                       x2={x(tick)}
                       y1={PLOT.top}
-                      y2={HEIGHT - PLOT.bottom}
+                      y2={height - PLOT.bottom}
                       className="sc-grid-line sc-grid-vertical"
                     />
                     <text
                       x={x(tick)}
-                      y={HEIGHT - PLOT.bottom + 22}
+                      y={height - PLOT.bottom + 22}
                       textAnchor="middle"
                       className="sc-axis-label"
                     >
@@ -388,7 +377,7 @@ export default function SolutionChart({
                     x1={x(currentParameter)}
                     x2={x(currentParameter)}
                     y1={PLOT.top}
-                    y2={HEIGHT - PLOT.bottom}
+                    y2={height - PLOT.bottom}
                     className="sc-current-line"
                   />
                   {selectedIndex === null &&
@@ -409,42 +398,39 @@ export default function SolutionChart({
                     })}
                   <circle
                     cx={x(currentParameter)}
-                    cy={HEIGHT - PLOT.bottom}
+                    cy={height - PLOT.bottom}
                     r="3"
                     fill="#6c827d"
                   />
                 </g>
               )}
 
-              {chart.hasData &&
-                selectedIndex !== null &&
-                activePoint &&
-                Number.isFinite(activePoint.parameter) && (
-                  <g>
-                    <line
-                      x1={x(activePoint.parameter)}
-                      x2={x(activePoint.parameter)}
-                      y1={PLOT.top}
-                      y2={HEIGHT - PLOT.bottom}
-                      className="sc-crosshair"
-                    />
-                    {visible.map(({ name, index }) => {
-                      const value = activePoint.values?.[index]
-                      if (typeof value !== 'number' || !Number.isFinite(value))
-                        return null
-                      return (
-                        <circle
-                          key={name}
-                          cx={x(activePoint.parameter)}
-                          cy={y(value)}
-                          r="4.5"
-                          fill={SERIES_COLORS[index % SERIES_COLORS.length]}
-                          className="sc-active-dot"
-                        />
-                      )
-                    })}
-                  </g>
-                )}
+              {chart.hasData && selectedIndex !== null && selectedInDomain && (
+                <g>
+                  <line
+                    x1={x(activePoint.parameter)}
+                    x2={x(activePoint.parameter)}
+                    y1={PLOT.top}
+                    y2={height - PLOT.bottom}
+                    className="sc-crosshair"
+                  />
+                  {visible.map(({ name, index }) => {
+                    const value = activePoint.values?.[index]
+                    if (typeof value !== 'number' || !Number.isFinite(value))
+                      return null
+                    return (
+                      <circle
+                        key={name}
+                        cx={x(activePoint.parameter)}
+                        cy={y(value)}
+                        r="4.5"
+                        fill={SERIES_COLORS[index % SERIES_COLORS.length]}
+                        className="sc-active-dot"
+                      />
+                    )
+                  })}
+                </g>
+              )}
             </>
           )}
         </svg>
@@ -456,7 +442,7 @@ export default function SolutionChart({
           </div>
         )}
 
-        {chart?.hasData && selectedIndex !== null && activePoint && (
+        {chart?.hasData && selectedIndex !== null && selectedInDomain && (
           <div
             className="sc-tooltip"
             style={{

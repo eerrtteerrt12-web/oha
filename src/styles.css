@@ -1592,13 +1592,13 @@ h2 {
   display: none;
 }
 .results-expanded .results-column {
-  max-width: 1100px;
+  max-width: none;
   width: 100%;
   margin: auto;
 }
 .results-expanded .solution-chart {
-  max-width: 850px;
-  margin-inline: auto;
+  max-width: none;
+  margin-inline: 0;
 }
 .toast {
   position: fixed;
@@ -3314,5 +3314,284 @@ h2 {
   }
   .all-reports-button {
     font-size: 10px;
+  }
+}
+
+.parameter-current-value {
+  font-size: 9px;
+  font-family: Consolas, monospace;
+  color: #94a287;
+}
+.results-parameters {
+  padding: 15px 22px;
+  background: #fbfdf7;
+  border-top: 1px solid #edf1e6;
+  border-bottom: 1px solid #e7eedf;
+}
+.results-parameters-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 13px;
+  color: #76906a;
+  font-size: 11px;
+}
+.results-parameters-heading > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.results-parameters-heading > small {
+  font-size: 8px;
+  color: #9bab8c;
+}
+.results-parameter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 23px;
+}
+.result-parameter {
+  min-width: 0;
+}
+.result-parameter .parameter-top {
+  margin: 0;
+}
+.result-parameter .parameter-name {
+  font-size: 11px;
+}
+.result-parameter .parameter-input-wrap > input {
+  width: 67px;
+  background: #fff;
+}
+.result-parameter .range-labels {
+  font-size: 8px;
+}
+.result-parameter .parameter-slider {
+  margin-top: 12px;
+}
+.solution-item {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.solution-item > .solution-choice {
+  width: 100%;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  flex: 1;
+}
+.add-simulation-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 100%;
+  padding: 7px 6px;
+  color: #91a77c;
+  background: #f9fbf5;
+  border: 1px solid #e1ead6;
+  border-top: 0;
+  border-radius: 0 0 5px 5px;
+  font-size: 9px;
+}
+.add-simulation-button:hover {
+  background: #eef5e7;
+  color: #658a50;
+}
+.add-simulation-button:disabled {
+  color: #acb8a0;
+  background: #fbfcf8;
+  opacity: 0.7;
+}
+.multi-simulation-view .solution-summary,
+.multi-simulation-view > .nonlinear-status,
+.multi-simulation-view > .auxiliary-values {
+  display: none;
+}
+.multi-simulation-view .solution-list {
+  max-height: 135px;
+}
+.multi-simulation-view .solutions-section {
+  padding-bottom: 13px;
+}
+.multi-simulation-workspace {
+  padding: 19px 20px 20px;
+  border-top: 1px solid #e4ebdb;
+  background: #f8faf4;
+}
+.multi-simulation-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  margin-bottom: 17px;
+}
+.multi-simulation-toolbar h3 {
+  font-size: 12px;
+  font-weight: 550;
+  color: #6e895d;
+}
+.multi-simulation-toolbar h3 span {
+  font-size: 9px;
+  font-weight: 400;
+  color: #9aab88;
+  margin-left: 6px;
+}
+.multi-simulation-toolbar p {
+  font-size: 9px;
+  line-height: 1.8;
+  color: #a0ad92;
+  margin-top: 6px;
+}
+.multi-simulation-toolbar > label {
+  font-size: 9px;
+  color: #8ca17a;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+.multi-simulation-toolbar select {
+  appearance: auto;
+  border: 1px solid #dde8d0;
+  border-radius: 4px;
+  background: #fff;
+  color: #749466;
+  font-size: 10px;
+  padding: 6px;
+  max-width: 110px;
+}
+.simulation-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 15px;
+  align-items: start;
+}
+.multi-simulation-note {
+  font-size: 9px;
+  color: #a1af92;
+  line-height: 1.9;
+  margin-top: 14px;
+}
+.results-expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  width: 100vw;
+  height: 100dvh;
+  overflow-y: auto;
+  background: #f6f8f2;
+  padding: 18px 24px;
+  display: block;
+  overscroll-behavior: contain;
+}
+.results-expanded .results-column {
+  max-width: 1750px;
+  margin: auto;
+  gap: 15px;
+}
+.results-expanded .results-panel {
+  overflow: visible;
+}
+.results-expanded .results-heading {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  background: #fff;
+  border-radius: 10px 10px 0 0;
+  border-bottom: 1px solid #e8eedf;
+  padding-top: 19px;
+  padding-bottom: 19px;
+}
+.results-expanded .results-parameters {
+  position: sticky;
+  top: 63px;
+  z-index: 7;
+  max-height: 190px;
+  overflow-y: auto;
+  background: #fbfdf7;
+  box-shadow: 0 5px 10px #344d2910;
+}
+.results-expanded .results-parameter-grid {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 15px 28px;
+}
+.results-expanded .multi-simulation-workspace {
+  padding: 20px 24px 24px;
+}
+.results-expanded .simulation-grid {
+  gap: 20px;
+}
+.results-expanded .chart-section {
+  padding-inline: 30px;
+}
+.results-expanded .insight-card {
+  display: none;
+}
+@media (max-width: 1190px) {
+  .simulation-grid {
+    grid-template-columns: 1fr;
+  }
+  .results-expanded .simulation-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .results-parameters {
+    padding-inline: 18px;
+  }
+  .multi-simulation-toolbar {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+}
+@media (max-width: 760px) {
+  .results-parameters {
+    padding: 15px 18px;
+  }
+  .results-parameter-grid {
+    grid-template-columns: 1fr;
+    gap: 15px;
+  }
+  .results-parameters-heading {
+    font-size: 10px;
+  }
+  .results-parameters-heading > small {
+    font-size: 7px;
+  }
+  .multi-simulation-workspace {
+    padding: 16px 13px;
+  }
+  .simulation-grid,
+  .results-expanded .simulation-grid {
+    grid-template-columns: 1fr;
+  }
+  .multi-simulation-toolbar {
+    gap: 10px;
+  }
+  .multi-simulation-toolbar h3 {
+    font-size: 11px;
+  }
+  .results-expanded {
+    padding: 8px;
+  }
+  .results-expanded .results-heading {
+    padding: 15px;
+  }
+  .results-expanded .results-parameters {
+    top: 57px;
+    max-height: 185px;
+  }
+  .results-expanded .multi-simulation-workspace {
+    padding: 15px 12px;
+  }
+  .results-expanded .chart-section {
+    padding-inline: 16px;
+  }
+  .results-expanded .results-parameter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 15px;
+  }
+  .solution-item .add-simulation-button {
+    font-size: 8px;
   }
 }

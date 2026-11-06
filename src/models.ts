@@ -1,4 +1,4 @@
-import type { ConditionNorm } from './engine'
+import type { ConditionNorm, SimulationAnchor } from './engine'
 
 export type SolverMode = 'linear' | 'nonlinear'
 
@@ -20,6 +20,7 @@ export type Project = {
   nonlinearSearch?: 'auto' | 'manual'
   searchBounds?: { min: number; max: number }
   selectedSolution?: number
+  simulations?: SimulationAnchor[]
 }
 
 export const DEFAULT_PROJECT: Project = {

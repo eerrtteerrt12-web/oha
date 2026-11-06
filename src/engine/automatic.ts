@@ -195,14 +195,26 @@ function sameSolution(result: SolveResult, other: SolveResult) {
         Math.max(Number.MIN_VALUE, Math.abs(value), Math.abs(other.values[i])),
   )
 }
+/** Compare Euclidean distances without overflowing for large coordinates.
+ * Symmetric roots use a stable positive-first tie break, independent of the
+ * small rounding differences between their numerical refinements. */
+function compareFromOrigin(a: number[], b: number[]) {
+  const scale = Math.max(...a.map(Math.abs), ...b.map(Math.abs))
+  if (scale > 0) {
+    const first = Math.hypot(...a.map((value) => value / scale))
+    const second = Math.hypot(...b.map((value) => value / scale))
+    const difference = first - second
+    if (Math.abs(difference) > 1e-10 * Math.max(first, second))
+      return difference
+  }
+  for (let index = 0; index < a.length; index++) {
+    const difference = b[index] - a[index]
+    if (difference !== 0) return difference
+  }
+  return 0
+}
 function sortSolutions(solutions: SolveResult[]) {
-  solutions.sort((a, b) => {
-    for (let index = 0; index < a.values.length; index++) {
-      const difference = a.values[index] - b.values[index]
-      if (difference !== 0) return difference
-    }
-    return 0
-  })
+  solutions.sort((a, b) => compareFromOrigin(a.values, b.values))
 }
 function tryScalar(
   model: CompiledModel,
@@ -426,7 +438,7 @@ function systemSeeds(size: number, bounds: { min: number; max: number }) {
         (_, j) => middle + width * (2 * radicalInverse(index, primes[j]) - 1),
       ),
     )
-  return seeds.slice(0, limit)
+  return seeds.sort(compareFromOrigin).slice(0, limit)
 }
 
 /** Search is deterministic and bounded. It returns discovered finite real
@@ -492,12 +504,13 @@ export async function createAutomaticSolver(
       )
     const add = (result: SolveResult) => {
       if (!inBounds(result.values)) return
-      if (solutions.length >= ROOT_LIMIT) {
-        if (!solutions.some((other) => sameSolution(result, other)))
+      if (unique(solutions, result)) {
+        sortSolutions(solutions)
+        if (solutions.length > ROOT_LIMIT) {
+          solutions.pop()
           truncated = true
-        return
+        }
       }
-      unique(solutions, result)
     }
     let method: string
     let note: string
@@ -551,43 +564,90 @@ export async function createAutomaticSolver(
         note =
           '표시한 범위 안에서 여러 구간과 시작점으로 유한한 실근을 탐색했습니다. 범위 밖의 해, 가까운 중근 또는 일부 해는 누락될 수 있습니다.'
         const count = 2048
-        let previousX: number | undefined, previousY: number | undefined
-        for (let index = 0; index <= count; index++) {
+        const grid = Array.from(
+          { length: count + 1 },
+          (_, index) =>
+            bounds.min * (1 - index / count) + bounds.max * (index / count),
+        )
+        const sampled = new Map<number, number | undefined>()
+        const sample = (value: number) => {
+          if (sampled.has(value)) return sampled.get(value)
+          const residual = tryScalar(prepared.model, parameters, value)
+          sampled.set(value, residual)
+          if (
+            residual === 0 &&
+            hasLocalVariation(prepared.model, parameters, value)
+          )
+            add(scalarResult(prepared, parameters, value, options))
+          return residual
+        }
+        // Visit adjacent intervals from zero outward. A left-to-right scan
+        // can consume the display/time budget on distant negative roots.
+        if (bounds.min <= 0 && bounds.max >= 0) sample(0)
+        const intervals = Array.from({ length: count }, (_, index) => index)
+        intervals.sort((a, b) =>
+          compareFromOrigin(
+            [grid[a] / 2 + grid[a + 1] / 2],
+            [grid[b] / 2 + grid[b + 1] / 2],
+          ),
+        )
+        for (const index of intervals) {
           if (timedOut()) {
             truncated = true
             break
           }
-          const value =
-            bounds.min * (1 - index / count) + bounds.max * (index / count)
-          const residual = tryScalar(prepared.model, parameters, value)
-          if (residual !== undefined) {
-            if (
-              residual === 0 &&
-              hasLocalVariation(prepared.model, parameters, value)
-            )
-              add(scalarResult(prepared, parameters, value, options))
-            if (
-              previousY !== undefined &&
-              previousX !== undefined &&
-              residual !== 0 &&
-              Math.sign(previousY) !== Math.sign(residual)
-            ) {
-              attempts++
-              try {
-                const sourceWithBounds = `${prepared.source}\n${prepared.variables[0]}(min) = ${previousX}\n${prepared.variables[0]}(max) = ${value}`
-                add(manual(sourceWithBounds, parameters, options))
-              } catch (error) {
-                if (!(error instanceof ModelError)) throw error
-              }
+          const left = grid[index]
+          const right = grid[index + 1]
+          const leftResidual = sample(left)
+          const rightResidual = sample(right)
+          if (
+            leftResidual !== undefined &&
+            rightResidual !== undefined &&
+            leftResidual !== 0 &&
+            rightResidual !== 0 &&
+            Math.sign(leftResidual) !== Math.sign(rightResidual)
+          ) {
+            attempts++
+            try {
+              const sourceWithBounds = `${prepared.source}\n${prepared.variables[0]}(min) = ${left}\n${prepared.variables[0]}(max) = ${right}`
+              const bracketed = manual(sourceWithBounds, parameters, {
+                ...options,
+                computeCondition: false,
+              })
+              // Refine the bracketed value to the same relative tolerance as
+              // Newton candidates. A coarse near-zero bracket result must
+              // not become an extra solution next to an exactly sampled 0.
+              const refined = scalarNear(
+                prepared,
+                parameters,
+                bracketed.values[0],
+                bounds,
+              )
+              add(
+                scalarResult(
+                  prepared,
+                  parameters,
+                  refined.value,
+                  options,
+                  (bracketed.iterations ?? 0) + refined.iterations,
+                ),
+              )
+            } catch (error) {
+              if (!(error instanceof ModelError)) throw error
             }
           }
-          previousX = value
-          previousY = residual
         }
         // Newton adds tangential roots that do not change sign on a grid.
-        for (let index = 0; index <= 96 && !timedOut(); index++) {
+        const seeds = Array.from(
+          { length: 97 },
+          (_, index) =>
+            bounds.min * (1 - index / 96) + bounds.max * (index / 96),
+        ).sort((a, b) => compareFromOrigin([a], [b]))
+        if (bounds.min <= 0 && bounds.max >= 0 && !seeds.includes(0))
+          seeds.unshift(0)
+        for (const seed of seeds) {
+          if (timedOut()) break
           attempts++
-          const seed = bounds.min * (1 - index / 96) + bounds.max * (index / 96)
           try {
             const refined = scalarNear(prepared, parameters, seed, bounds)
             add(
@@ -624,6 +684,7 @@ export async function createAutomaticSolver(
     }
     sortSolutions(solutions)
     if (truncated) note += ' 탐색 시간 또는 표시 개수 제한에 도달했습니다.'
+    note += ' 발견한 해는 원점에 가까운 순서로 최대 32개 표시합니다.'
     const durationMs = performance.now() - start
     for (const result of solutions) result.durationMs = durationMs
     return {

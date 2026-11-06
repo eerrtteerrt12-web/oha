@@ -29,6 +29,7 @@ import {
 } from 'lucide-react'
 import SolutionChart, { SERIES_COLORS } from './components/SolutionChart'
 import Guide from './components/Guide'
+import SimulationPanelView from './components/SimulationPanelView'
 import {
   DEFAULT_PROJECT,
   DEFAULT_NONLINEAR_PROJECT,
@@ -41,6 +42,9 @@ import {
   type SolvePayload,
   type SolveResult,
   type SearchSummary,
+  type SimulationAnchor,
+  type SimulationPanel,
+  type Parameter,
 } from './engine'
 
 const STORAGE_KEY = 'polymath-studio-project-v1'
@@ -57,6 +61,36 @@ const fmt = (n: number, digits = 5) =>
         : Number(n.toPrecision(digits)).toLocaleString('en-US', {
             maximumFractionDigits: 8,
           })
+function validAnchor(value: unknown): value is SimulationAnchor {
+  if (!value || typeof value !== 'object') return false
+  const a = value as SimulationAnchor
+  return (
+    typeof a.id === 'string' &&
+    a.id.length <= 100 &&
+    typeof a.label === 'string' &&
+    a.label.length <= 100 &&
+    Array.isArray(a.variables) &&
+    a.variables.length > 0 &&
+    a.variables.length <= 16 &&
+    a.variables.every(
+      (n) => typeof n === 'string' && /^[A-Za-z][A-Za-z0-9_]*$/.test(n),
+    ) &&
+    new Set(a.variables).size === a.variables.length &&
+    Array.isArray(a.values) &&
+    a.values.length === a.variables.length &&
+    a.values.every(Number.isFinite) &&
+    !!a.parameters &&
+    typeof a.parameters === 'object' &&
+    !Array.isArray(a.parameters) &&
+    Object.keys(a.parameters).length <= 24 &&
+    Object.entries(a.parameters).every(
+      ([name, v]) =>
+        /^[A-Za-z][A-Za-z0-9_]*$/.test(name) &&
+        typeof v === 'number' &&
+        Number.isFinite(v),
+    )
+  )
+}
 function isProject(value: unknown): value is Project {
   if (!value || typeof value !== 'object') return false
   const p = value as Project
@@ -67,6 +101,12 @@ function isProject(value: unknown): value is Project {
     typeof p.source === 'string' &&
     p.source.length <= 30000 &&
     typeof p.sweepName === 'string' &&
+    (p.simulations === undefined ||
+      (Array.isArray(p.simulations) &&
+        p.simulations.length <= 6 &&
+        p.simulations.every(validAnchor) &&
+        new Set(p.simulations.map((a) => a.id)).size ===
+          p.simulations.length)) &&
     (p.nonlinearSearch === undefined ||
       p.nonlinearSearch === 'auto' ||
       p.nonlinearSearch === 'manual') &&
@@ -124,6 +164,9 @@ export default function App() {
   const [project, setProject] = useState<Project>(initialProject)
   const [payload, setPayload] = useState<SolvePayload | null>(null)
   const [error, setError] = useState('')
+  const [simulationResults, setSimulationResults] = useState<SimulationPanel[]>(
+    [],
+  )
   const [searchInfo, setSearchInfo] = useState<SearchSummary | null>(null)
   const [pending, setPending] = useState(false)
   const [workerReady, setWorkerReady] = useState(false)
@@ -154,6 +197,7 @@ export default function App() {
   const nonlinearSearch = project.nonlinearSearch ?? 'auto'
   const automatic = nonlinear && nonlinearSearch === 'auto'
   const solutionIndex = project.selectedSolution ?? 0
+  const anchors = project.simulations ?? []
   const solutions = payload?.solutions ?? (result ? [result] : [])
   const evaluation = result?.kind === 'evaluation'
   const displayWarnings =
@@ -191,6 +235,7 @@ export default function App() {
       setPending(false)
       if (data.ok) {
         setPayload(data.payload)
+        setSimulationResults(data.payload.simulations ?? [])
         setSearchInfo(data.payload.search ?? null)
         if (data.payload.selectedSolution !== undefined)
           setProject((p) =>
@@ -202,6 +247,7 @@ export default function App() {
       } else {
         setError(data.line ? `${data.line}행 · ${data.error}` : data.error)
         setPayload(null)
+        setSimulationResults(data.simulations ?? [])
         setSearchInfo(data.search ?? null)
       }
     }
@@ -223,6 +269,7 @@ export default function App() {
       setPending(false)
       setError('')
       setSearchInfo(null)
+      setSimulationResults([])
       return
     }
     setPending(true)
@@ -238,6 +285,7 @@ export default function App() {
         nonlinearSearch,
         searchBounds: project.searchBounds,
         solutionIndex,
+        simulationAnchors: project.simulations,
         parameters: Object.fromEntries(
           project.parameters.map((p) => [p.name, p.value]),
         ),
@@ -262,6 +310,7 @@ export default function App() {
     nonlinearSearch,
     project.searchBounds,
     solutionIndex,
+    project.simulations,
     revision,
     workerReady,
   ])
@@ -283,6 +332,50 @@ export default function App() {
     setVisibleVariables(variableKey ? variableKey.split('|') : [])
   }, [variableKey])
   useEffect(() => {
+    if (!expanded) return
+    const previousOverflow = document.body.style.overflow
+    const previousFocus = document.activeElement as HTMLElement | null
+    document.body.style.overflow = 'hidden'
+    const area = document.querySelector<HTMLElement>('.results-expanded')
+    area?.querySelector<HTMLButtonElement>('.results-heading button')?.focus()
+    const trap = (e: KeyboardEvent) => {
+      if (
+        e.key !== 'Tab' ||
+        !area ||
+        document.querySelector('[aria-modal="true"]:not(.results-expanded)')
+      )
+        return
+      const items = Array.from(
+        area.querySelectorAll<HTMLElement>(
+          'button:not([disabled]),input:not([disabled]),select:not([disabled]),summary,[tabindex="0"]',
+        ),
+      ).filter((el) => el.getClientRects().length > 0)
+      const first = items[0],
+        last = items.at(-1)
+      if (
+        e.shiftKey &&
+        (document.activeElement === first ||
+          !area.contains(document.activeElement))
+      ) {
+        e.preventDefault()
+        last?.focus()
+      } else if (
+        !e.shiftKey &&
+        (document.activeElement === last ||
+          !area.contains(document.activeElement))
+      ) {
+        e.preventDefault()
+        first?.focus()
+      }
+    }
+    document.addEventListener('keydown', trap)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      document.removeEventListener('keydown', trap)
+      previousFocus?.focus()
+    }
+  }, [expanded])
+  useEffect(() => {
     if (!toast) return
     const t = setTimeout(() => {
       setToast('')
@@ -297,15 +390,15 @@ export default function App() {
         setRevision((v) => v + 1)
       }
       if (e.key === 'Escape') {
-        setGuide(false)
-        setExamplesOpen(false)
-        setParamOpen(false)
-        setExpanded(false)
+        if (guide) setGuide(false)
+        else if (paramOpen) setParamOpen(false)
+        else if (examplesOpen) setExamplesOpen(false)
+        else setExpanded(false)
       }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [])
+  }, [guide, paramOpen, examplesOpen])
   useEffect(() => {
     if (!paramOpen) return
     const previous = document.activeElement as HTMLElement | null
@@ -387,6 +480,57 @@ export default function App() {
     setView('simulation')
     setToast('예제 모델을 불러왔습니다.')
   }
+  function rootAlreadyOpen(item: SolveResult) {
+    return simulationResults.some(
+      (panel) =>
+        anchors.some((anchor) => anchor.id === panel.id) &&
+        panel.result &&
+        panel.result.variables.join('|') === item.variables.join('|') &&
+        panel.result.values.every(
+          (v, i) =>
+            Math.abs(v - item.values[i]) <=
+            2e-7 *
+              Math.max(Number.MIN_VALUE, Math.abs(v), Math.abs(item.values[i])),
+        ),
+    )
+  }
+  function addSimulation(item: SolveResult, index: number) {
+    if (pending || anchors.length >= 6 || rootAlreadyOpen(item)) return
+    const base = `해 ${index + 1}`
+    const label = anchors.some((a) => a.label === base)
+      ? `${base} · 비교 ${anchors.length + 1}`
+      : base
+    const anchor: SimulationAnchor = {
+      id: crypto.randomUUID(),
+      label,
+      variables: [...item.variables],
+      values: [...item.values],
+      parameters: Object.fromEntries(
+        project.parameters.map((p) => [p.name, p.value]),
+      ),
+    }
+    setProject((p) => ({
+      ...p,
+      simulations: [...(p.simulations ?? []), anchor],
+    }))
+    setView('simulation')
+    setToast(`${label} 시뮬레이션을 추가했습니다.`)
+  }
+  function closeSimulation(id: string) {
+    setProject((p) => ({
+      ...p,
+      simulations: (p.simulations ?? []).filter((a) => a.id !== id),
+    }))
+  }
+  function exportSimulationReport(panel: SimulationPanel) {
+    if (!panel.result || pending) return
+    downloadFile(
+      `polymath-simulation-${panel.id.replace(/[^a-zA-Z0-9_-]/g, '_')}-report.md`,
+      buildReport(panel.result, undefined, null) +
+        `\n\n시뮬레이션: ${panel.label}\n\n추가 시점의 해를 기준으로 이어서 계산한 결과입니다. 전역 자동 탐색의 해 번호와 별개이며, 분기점에서는 가지 구분이 어려울 수 있습니다.\n`,
+      'text/markdown;charset=utf-8',
+    )
+  }
   function updateParameter(id: string, value: number) {
     setProject((p) => ({
       ...p,
@@ -459,15 +603,19 @@ export default function App() {
     setParamValue('1')
     setParamError('')
   }
-  function buildReport(target: SolveResult, index?: number) {
+  function buildReport(
+    target: SolveResult,
+    index?: number,
+    coverage: SearchSummary | null = searchInfo,
+  ) {
     const isEvaluation = target.kind === 'evaluation'
     return (
       [
         `# ${project.title}${index === undefined ? '' : ` · 해 ${index + 1}`}`,
         project.description,
         `유형: ${nonlinear ? 'Nonlinear' : 'Linear'}`,
-        searchInfo
-          ? `탐색: ${searchInfo.method}\n\n범위: ${searchInfo.min} ~ ${searchInfo.max}\n\n${searchInfo.note}`
+        coverage
+          ? `탐색: ${coverage.method}\n\n범위: ${coverage.min} ~ ${coverage.max}\n\n${coverage.note}`
           : '',
         target.method
           ? `방법: ${target.method} · 반복 ${target.iterations ?? 0}회`
@@ -729,7 +877,12 @@ export default function App() {
               <span />내 브라우저에서 안전하게 연산
             </div>
           </div>
-          <div className={`studio-grid ${expanded ? 'results-expanded' : ''}`}>
+          <div
+            className={`studio-grid ${expanded ? 'results-expanded' : ''}`}
+            role={expanded ? 'dialog' : undefined}
+            aria-modal={expanded ? true : undefined}
+            aria-label={expanded ? '결과 탐색 전체화면' : undefined}
+          >
             <div className="model-column">
               <section className="panel model-panel">
                 <div className="panel-heading">
@@ -818,6 +971,7 @@ export default function App() {
                         ...p,
                         source: e.target.value,
                         selectedSolution: 0,
+                        simulations: [],
                       }))
                     }
                     placeholder={
@@ -839,6 +993,8 @@ export default function App() {
                             p.source.slice(0, start) +
                             '  ' +
                             p.source.slice(end),
+                          selectedSolution: 0,
+                          simulations: [],
                         }))
                         requestAnimationFrame(() => {
                           el.selectionStart = el.selectionEnd = start + 2
@@ -884,6 +1040,7 @@ export default function App() {
                               | 'auto'
                               | 'manual',
                             selectedSolution: 0,
+                            simulations: [],
                           }))
                         }
                       >
@@ -959,7 +1116,7 @@ export default function App() {
                   </button>
                 </div>
                 <p className="section-description">
-                  값을 움직여 모델의 변화를 확인하세요.
+                  범위와 간격을 설정하세요. 값은 결과 탐색에서 조절합니다.
                 </p>
                 <div className="parameter-list">
                   {project.parameters.map((p, i) => (
@@ -979,10 +1136,9 @@ export default function App() {
                           </span>
                         </div>
                         <div className="parameter-input-wrap">
-                          <ParameterValueInput
-                            parameter={p}
-                            onCommit={(value) => updateParameter(p.id, value)}
-                          />
+                          <span className="parameter-current-value">
+                            현재 {fmt(p.value, 10)}
+                          </span>
                           {rangeEditor && (
                             <button
                               className="delete-param"
@@ -1008,27 +1164,9 @@ export default function App() {
                           )}
                         </div>
                       </div>
-                      <input
-                        id={`param-${p.id}`}
-                        className="parameter-slider"
-                        aria-label={`${p.name} 슬라이더`}
-                        type="range"
-                        min={p.min}
-                        max={p.max}
-                        step={p.step}
-                        value={p.value}
-                        style={
-                          {
-                            '--range-fill': `${((p.value - p.min) / (p.max - p.min)) * 100}%`,
-                          } as React.CSSProperties
-                        }
-                        onChange={(e) =>
-                          updateParameter(p.id, Number(e.target.value))
-                        }
-                      />
                       <div className="range-labels">
                         <span>{fmt(p.min)}</span>
-                        {i === 0 && <span>파라미터 범위</span>}
+                        <span>간격 {String(p.step)}</span>
                         <span>{fmt(p.max)}</span>
                       </div>
                       {rangeEditor && (
@@ -1069,8 +1207,8 @@ export default function App() {
                   파라미터 추가
                 </button>
                 <div className="live-note">
-                  <span className="live-dot" />
-                  슬라이더를 움직이면 자동으로 다시 계산합니다.
+                  <span className="live-dot" />값 조절은 오른쪽 결과 탐색에서 할
+                  수 있습니다.
                 </div>
               </section>
               <div className="tip-card">
@@ -1091,7 +1229,9 @@ export default function App() {
               </div>
             </div>
             <div className={`results-column ${pending ? 'is-computing' : ''}`}>
-              <section className="panel results-panel">
+              <section
+                className={`panel results-panel ${automatic && anchors.length > 0 && view === 'simulation' ? 'multi-simulation-view' : ''}`}
+              >
                 <div className="results-heading">
                   <div className="section-label">
                     <span className="step-number">03</span>
@@ -1128,6 +1268,12 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+                {project.parameters.length > 0 && (
+                  <ResultParameters
+                    parameters={project.parameters}
+                    onChange={updateParameter}
+                  />
+                )}
                 <div className="result-mode-tabs">
                   <button
                     className={view === 'simulation' ? 'active' : ''}
@@ -1215,32 +1361,48 @@ export default function App() {
                           aria-label="발견한 실수 해"
                         >
                           {solutions.map((item, i) => (
-                            <button
-                              key={i}
-                              className={`solution-choice ${(payload?.selectedSolution ?? solutionIndex) === i ? 'selected' : ''}`}
-                              aria-pressed={
-                                (payload?.selectedSolution ?? solutionIndex) ===
-                                i
-                              }
-                              aria-label={`해 ${i + 1} ${item.variables.map((name, j) => `${name} ${fmt(item.values[j], 10)}`).join(' ')}`}
-                              disabled={pending}
-                              onClick={() =>
-                                setProject((p) => ({
-                                  ...p,
-                                  selectedSolution: i,
-                                }))
-                              }
-                            >
-                              <span>해 {i + 1}</span>
-                              <strong>
-                                {item.variables
-                                  .map(
-                                    (name, j) =>
-                                      `${name} = ${fmt(item.values[j], 10)}`,
-                                  )
-                                  .join(' · ')}
-                              </strong>
-                            </button>
+                            <div className="solution-item" key={i}>
+                              <button
+                                className={`solution-choice ${(payload?.selectedSolution ?? solutionIndex) === i ? 'selected' : ''}`}
+                                aria-pressed={
+                                  (payload?.selectedSolution ??
+                                    solutionIndex) === i
+                                }
+                                aria-label={`해 ${i + 1} ${item.variables.map((name, j) => `${name} ${fmt(item.values[j], 10)}`).join(' ')}`}
+                                disabled={pending}
+                                onClick={() =>
+                                  setProject((p) => ({
+                                    ...p,
+                                    selectedSolution: i,
+                                  }))
+                                }
+                              >
+                                <span>해 {i + 1}</span>
+                                <strong>
+                                  {item.variables
+                                    .map(
+                                      (name, j) =>
+                                        `${name} = ${fmt(item.values[j], 10)}`,
+                                    )
+                                    .join(' · ')}
+                                </strong>
+                              </button>
+                              <button
+                                className="add-simulation-button"
+                                aria-label={`해 ${i + 1} 시뮬레이션 추가`}
+                                disabled={
+                                  pending ||
+                                  anchors.length >= 6 ||
+                                  rootAlreadyOpen(item)
+                                }
+                                onClick={() => addSimulation(item, i)}
+                              >
+                                <Plus size={12} />
+                                {rootAlreadyOpen(item)
+                                  ? '열린 시뮬레이션'
+                                  : '시뮬레이션 추가'}
+                              </button>
+                            </div>
                           ))}
                         </div>
                         {searchInfo && <SearchCoverage search={searchInfo} />}
@@ -1323,161 +1485,173 @@ export default function App() {
                       )}
                     {view === 'simulation' ? (
                       <>
-                        <div className="chart-section">
-                          <div className="chart-heading">
-                            <div>
-                              <h3>파라미터에 따른 해의 변화</h3>
-                              <p>
-                                한 변수를 움직이면, 해답은 어떻게 달라질까요?
-                              </p>
-                            </div>
-                            <span className="chart-kicker">
-                              PARAMETRIC EXPLORATION
-                            </span>
-                          </div>
-                          {sweepParam ? (
-                            <>
-                              <div className="chart-controls">
-                                <label htmlFor="sweep-param">탐색 변수</label>
-                                <div className="select-wrap">
-                                  <select
-                                    id="sweep-param"
-                                    value={project.sweepName}
-                                    onChange={(e) =>
-                                      setProject((p) => ({
-                                        ...p,
-                                        sweepName: e.target.value,
-                                      }))
-                                    }
-                                  >
-                                    {project.parameters.map((p) => (
-                                      <option key={p.id} value={p.name}>
-                                        {p.name}
-                                      </option>
-                                    ))}
-                                  </select>
-                                  <ChevronDown size={12} />
+                        {(!automatic || anchors.length === 0) && (
+                          <>
+                            <div className="chart-section">
+                              <div className="chart-heading">
+                                <div>
+                                  <h3>파라미터에 따른 해의 변화</h3>
+                                  <p>
+                                    한 변수를 움직이면, 해답은 어떻게
+                                    달라질까요?
+                                  </p>
                                 </div>
-                                <span className="sweep-domain">
-                                  {fmt(sweepParam.min)}
-                                  <ArrowRight size={12} />
-                                  {fmt(sweepParam.max)}
+                                <span className="chart-kicker">
+                                  PARAMETRIC EXPLORATION
                                 </span>
                               </div>
-                              <SolutionChart
-                                points={payload?.sweep || []}
-                                modelKind={nonlinear ? 'nonlinear' : 'linear'}
-                                selectionPoints={payload?.dataset}
-                                variables={result.variables}
-                                parameterName={project.sweepName}
-                                currentParameter={sweepParam.value}
-                                currentValues={result.values}
-                                selectedIndex={selectedIndex}
-                                onSelectIndex={setSelectedIndex}
-                                visibleVariables={visibleVariables}
-                                onToggleVariable={(v) =>
-                                  setVisibleVariables((prev) =>
-                                    prev.includes(v)
-                                      ? prev.filter((n) => n !== v)
-                                      : [...prev, v],
-                                  )
-                                }
-                              />
-                              {nonlinear && (
-                                <p className="nonlinear-sweep-note">
-                                  {automatic
-                                    ? '선택한 해에서 이어지는 가지를 수치적으로 추적합니다. 가지가 끝나거나 추적에 실패한 지점은 빈 값으로 표시됩니다.'
-                                    : '각 지점은 같은 초기값·구간으로 다시 풉니다. 모든 해를 추적하는 그래프는 아닙니다.'}
-                                </p>
+                              {sweepParam ? (
+                                <>
+                                  <div className="chart-controls">
+                                    <label htmlFor="sweep-param">
+                                      탐색 변수
+                                    </label>
+                                    <div className="select-wrap">
+                                      <select
+                                        id="sweep-param"
+                                        value={project.sweepName}
+                                        onChange={(e) =>
+                                          setProject((p) => ({
+                                            ...p,
+                                            sweepName: e.target.value,
+                                          }))
+                                        }
+                                      >
+                                        {project.parameters.map((p) => (
+                                          <option key={p.id} value={p.name}>
+                                            {p.name}
+                                          </option>
+                                        ))}
+                                      </select>
+                                      <ChevronDown size={12} />
+                                    </div>
+                                    <span className="sweep-domain">
+                                      {fmt(sweepParam.min)}
+                                      <ArrowRight size={12} />
+                                      {fmt(sweepParam.max)}
+                                    </span>
+                                  </div>
+                                  <SolutionChart
+                                    points={payload?.sweep || []}
+                                    expanded={expanded}
+                                    modelKind={
+                                      nonlinear ? 'nonlinear' : 'linear'
+                                    }
+                                    selectionPoints={payload?.dataset}
+                                    variables={result.variables}
+                                    parameterName={project.sweepName}
+                                    currentParameter={sweepParam.value}
+                                    currentValues={result.values}
+                                    selectedIndex={selectedIndex}
+                                    onSelectIndex={setSelectedIndex}
+                                    visibleVariables={visibleVariables}
+                                    onToggleVariable={(v) =>
+                                      setVisibleVariables((prev) =>
+                                        prev.includes(v)
+                                          ? prev.filter((n) => n !== v)
+                                          : [...prev, v],
+                                      )
+                                    }
+                                  />
+                                  {nonlinear && (
+                                    <p className="nonlinear-sweep-note">
+                                      {automatic
+                                        ? '선택한 해에서 이어지는 가지를 수치적으로 추적합니다. 가지가 끝나거나 추적에 실패한 지점은 빈 값으로 표시됩니다.'
+                                        : '각 지점은 같은 초기값·구간으로 다시 풉니다. 모든 해를 추적하는 그래프는 아닙니다.'}
+                                    </p>
+                                  )}
+                                  <p className="chart-footnote">
+                                    <span className="chart-current-dot" />
+                                    점선은 현재 설정값입니다. 그래프 위에
+                                    마우스를 올려 값을 확인하세요.
+                                  </p>
+                                </>
+                              ) : (
+                                <div className="empty-chart">
+                                  <Activity size={34} />
+                                  <h4>상수에 움직임을 더해 보세요.</h4>
+                                  <p>
+                                    파라미터를 추가하고 수식에 사용하면
+                                    <br />
+                                    해의 변화를 그래프로 탐색할 수 있습니다.
+                                  </p>
+                                  <button
+                                    className="text-button"
+                                    onClick={() => setParamOpen(true)}
+                                  >
+                                    첫 파라미터 추가
+                                    <Plus size={14} />
+                                  </button>
+                                </div>
                               )}
-                              <p className="chart-footnote">
-                                <span className="chart-current-dot" />
-                                점선은 현재 설정값입니다. 그래프 위에 마우스를
-                                올려 값을 확인하세요.
-                              </p>
-                            </>
-                          ) : (
-                            <div className="empty-chart">
-                              <Activity size={34} />
-                              <h4>상수에 움직임을 더해 보세요.</h4>
-                              <p>
-                                파라미터를 추가하고 수식에 사용하면
-                                <br />
-                                해의 변화를 그래프로 탐색할 수 있습니다.
-                              </p>
-                              <button
-                                className="text-button"
-                                onClick={() => setParamOpen(true)}
-                              >
-                                첫 파라미터 추가
-                                <Plus size={14} />
-                              </button>
                             </div>
-                          )}
-                        </div>
-                        <div className="data-section">
-                          <div className="data-toolbar">
-                            <h3 className="data-section-title">
-                              <Grid2X2 size={13} />
-                              데이터 표
-                            </h3>
-                            <button
-                              className="text-button"
-                              disabled={
-                                pending ||
-                                !!(sweepParam && payload?.datasetError)
-                              }
-                              onClick={exportCSV}
-                            >
-                              <ArrowDownToLine size={13} />
-                              CSV
-                            </button>
-                          </div>
-                          {sweepParam && payload ? (
-                            <SweepTable
-                              payload={payload}
-                              parameterStep={sweepParam.step}
-                              selectedIndex={selectedIndex}
-                              onSelectIndex={setSelectedIndex}
-                            />
-                          ) : (
-                            <div className="table-scroll">
-                              <table className="result-table">
-                                <thead>
-                                  <tr>
-                                    <th>변수</th>
-                                    <th>값</th>
-                                    {!evaluation && (
-                                      <th>방정식 최대 절대 잔차</th>
-                                    )}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {result.variables.map((v, i) => (
-                                    <tr key={v}>
-                                      <td>
-                                        <span
-                                          className="table-color"
-                                          style={{
-                                            background:
-                                              colors[i % colors.length],
-                                          }}
-                                        />
-                                        {v}
-                                      </td>
-                                      <td>{fmt(result.values[i], 10)}</td>
-                                      {!evaluation && (
-                                        <td>
-                                          {result.maxResidual.toExponential(2)}
-                                        </td>
-                                      )}
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
+                            <div className="data-section">
+                              <div className="data-toolbar">
+                                <h3 className="data-section-title">
+                                  <Grid2X2 size={13} />
+                                  데이터 표
+                                </h3>
+                                <button
+                                  className="text-button"
+                                  disabled={
+                                    pending ||
+                                    !!(sweepParam && payload?.datasetError)
+                                  }
+                                  onClick={exportCSV}
+                                >
+                                  <ArrowDownToLine size={13} />
+                                  CSV
+                                </button>
+                              </div>
+                              {sweepParam && payload ? (
+                                <SweepTable
+                                  payload={payload}
+                                  parameterStep={sweepParam.step}
+                                  selectedIndex={selectedIndex}
+                                  onSelectIndex={setSelectedIndex}
+                                />
+                              ) : (
+                                <div className="table-scroll">
+                                  <table className="result-table">
+                                    <thead>
+                                      <tr>
+                                        <th>변수</th>
+                                        <th>값</th>
+                                        {!evaluation && (
+                                          <th>방정식 최대 절대 잔차</th>
+                                        )}
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {result.variables.map((v, i) => (
+                                        <tr key={v}>
+                                          <td>
+                                            <span
+                                              className="table-color"
+                                              style={{
+                                                background:
+                                                  colors[i % colors.length],
+                                              }}
+                                            />
+                                            {v}
+                                          </td>
+                                          <td>{fmt(result.values[i], 10)}</td>
+                                          {!evaluation && (
+                                            <td>
+                                              {result.maxResidual.toExponential(
+                                                2,
+                                              )}
+                                            </td>
+                                          )}
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
                             </div>
-                          )}
-                        </div>
+                          </>
+                        )}
                       </>
                     ) : (
                       <div className="report-content">
@@ -1721,6 +1895,74 @@ export default function App() {
                       </span>
                     </div>
                   </>
+                )}
+                {automatic && view === 'simulation' && anchors.length > 0 && (
+                  <div className="multi-simulation-workspace">
+                    <div className="multi-simulation-toolbar">
+                      <div>
+                        <h3>
+                          동시 시뮬레이션 <span>{anchors.length} / 6</span>
+                        </h3>
+                        <p>
+                          오른쪽 위 파라미터 조절은 열린 모든 시뮬레이션에 함께
+                          적용됩니다.
+                        </p>
+                      </div>
+                      <label>
+                        탐색 변수
+                        <select
+                          aria-label="동시 시뮬레이션 탐색 변수"
+                          value={project.sweepName}
+                          onChange={(e) =>
+                            setProject((p) => ({
+                              ...p,
+                              sweepName: e.target.value,
+                            }))
+                          }
+                        >
+                          {project.parameters.map((p) => (
+                            <option key={p.id} value={p.name}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <div className="simulation-grid">
+                      {anchors.map((anchor) => {
+                        const panel = simulationResults.find(
+                          (p) => p.id === anchor.id,
+                        ) ?? {
+                          id: anchor.id,
+                          label: anchor.label,
+                          result: null,
+                          sweep: [],
+                          dataset: [],
+                          sweepName: project.sweepName,
+                          error: pending
+                            ? '계산 중입니다.'
+                            : '시뮬레이션 결과를 준비하고 있습니다.',
+                        }
+                        return (
+                          <SimulationPanelView
+                            key={anchor.id}
+                            panel={panel}
+                            anchor={anchor}
+                            parameters={project.parameters}
+                            expanded={expanded}
+                            pending={pending}
+                            onClose={() => closeSimulation(anchor.id)}
+                            onReport={() => exportSimulationReport(panel)}
+                          />
+                        )
+                      })}
+                    </div>
+                    <p className="multi-simulation-note">
+                      각 창은 추가한 시점의 해를 기준으로 이어서 풉니다.
+                      분기점·교차점에서는 가지 구분이 어려울 수 있으며 추적 실패
+                      구간은 빈 값으로 표시합니다.
+                    </p>
+                  </div>
                 )}
               </section>
               {view === 'simulation' && (
@@ -2141,7 +2383,7 @@ function SearchCoverage({ search }: { search: SearchSummary }) {
       <div>
         <span>{search.method}</span>
         <strong>
-          탐색 범위 {String(search.min)} ~ {String(search.max)}
+          탐색 범위 {fmt(search.min, 8)} ~ {fmt(search.max, 8)}
         </strong>
       </div>
       <p>{search.note}</p>
@@ -2219,5 +2461,62 @@ function SearchBoundsEditor({
       </div>
       {error && <span role="alert">{error}</span>}
     </form>
+  )
+}
+
+function ResultParameters({
+  parameters,
+  onChange,
+}: {
+  parameters: Parameter[]
+  onChange: (id: string, value: number) => void
+}) {
+  return (
+    <section className="results-parameters" aria-label="파라미터 조절">
+      <div className="results-parameters-heading">
+        <span>
+          <SlidersHorizontal size={14} />
+          파라미터 조절
+        </span>
+        <small>열린 모든 시뮬레이션에 적용</small>
+      </div>
+      <div className="results-parameter-grid">
+        {parameters.map((p) => (
+          <div key={p.id} className="result-parameter">
+            <div className="parameter-top">
+              <label htmlFor={`param-${p.id}`} className="parameter-name">
+                {p.name}
+              </label>
+              <div className="parameter-input-wrap">
+                <ParameterValueInput
+                  parameter={p}
+                  onCommit={(v) => onChange(p.id, v)}
+                />
+              </div>
+            </div>
+            <input
+              id={`param-${p.id}`}
+              aria-label={`${p.name} 슬라이더`}
+              className="parameter-slider"
+              type="range"
+              min={p.min}
+              max={p.max}
+              step={p.step}
+              value={p.value}
+              style={
+                {
+                  '--range-fill': `${((p.value - p.min) / (p.max - p.min)) * 100}%`,
+                } as React.CSSProperties
+              }
+              onChange={(e) => onChange(p.id, Number(e.target.value))}
+            />
+            <div className="range-labels">
+              <span>{String(p.min)}</span>
+              <span>{String(p.max)}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   )
 }

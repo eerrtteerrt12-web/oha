@@ -51,7 +51,25 @@ export type SearchSummary = {
   note: string
   truncated?: boolean
 }
+export type SimulationAnchor = {
+  id: string
+  label: string
+  variables: string[]
+  values: number[]
+  parameters: Record<string, number>
+}
+export type SimulationPanel = {
+  id: string
+  label: string
+  result: SolveResult | null
+  error?: string
+  sweep: SweepPoint[]
+  dataset: SweepPoint[]
+  datasetError?: string
+  sweepName: string
+}
 export type SolvePayload = {
+  simulations?: SimulationPanel[]
   solutions?: SolveResult[]
   selectedSolution?: number
   search?: SearchSummary

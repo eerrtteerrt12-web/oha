@@ -37,13 +37,30 @@ async function setSearchMode(page: Page, mode: 'auto' | 'manual') {
   await page.getByRole('combobox', { name: '해 탐색 방식' }).selectOption(mode)
 }
 
-async function selectSolution(page: Page, index: number, values: string[]) {
+async function selectSolution(page: Page, values: string[]) {
+  const matchingIndex = async () =>
+    (await page.locator('.solution-choice strong').allTextContents()).findIndex(
+      (text) => {
+        const actual = text
+          .split(' · ')
+          .map((part) => Number(part.split('=')[1]))
+        return (
+          actual.length === values.length &&
+          actual.every(
+            (value, i) => Math.abs(value - Number(values[i])) < 0.000001,
+          )
+        )
+      },
+    )
+  await expect.poll(matchingIndex).toBeGreaterThanOrEqual(0)
+  const index = await matchingIndex()
   const button = page.locator('.solution-choice').nth(index)
   await expect(button).toBeEnabled()
   await button.click()
   await expect(button).toHaveAttribute('aria-pressed', 'true')
   await expect(page.locator('.solution-value strong')).toHaveText(values)
   await expect(page.locator('.result-footer')).toContainText('계산 완료')
+  return index
 }
 
 async function conditionValue(page: Page) {
@@ -700,7 +717,7 @@ test.describe('Equation Solver workspace', () => {
       .fill('내 비선형 모델')
     const nonlinearSource = 'x^2 = 4'
     await editor.fill(nonlinearSource)
-    await expect(page.locator('.solution-value strong')).toHaveText(['-2'])
+    await expect(page.locator('.solution-value strong')).toHaveText(['2'])
     await expect(page.locator('.solution-choice')).toHaveCount(2)
     await page.getByRole('tab', { name: 'Linear', exact: true }).click()
     await expect(editor).toHaveValue('x = 7')
@@ -715,7 +732,7 @@ test.describe('Equation Solver workspace', () => {
       page.getByRole('tab', { name: 'Nonlinear', exact: true }),
     ).toHaveAttribute('aria-selected', 'true')
     await expect(editor).toHaveValue(nonlinearSource)
-    await expect(page.locator('.solution-value strong')).toHaveText(['-2'])
+    await expect(page.locator('.solution-value strong')).toHaveText(['2'])
     await page.getByRole('tab', { name: 'Linear', exact: true }).click()
     await expect(editor).toHaveValue('x = 7')
     await page.getByRole('tab', { name: 'Nonlinear', exact: true }).click()
@@ -736,13 +753,15 @@ test.describe('Equation Solver workspace', () => {
     )
     await expect(page.locator('.solution-choice')).toHaveCount(2)
     await expect(page.locator('.solution-choice').first()).toHaveAccessibleName(
-      '해 1 x -2',
+      '해 1 x 2',
     )
     await expect(page.locator('.solution-choice').last()).toHaveAccessibleName(
-      '해 2 x 2',
+      '해 2 x -2',
     )
-    await expect(page.locator('.solution-value strong')).toHaveText(['-2'])
-    await expect(page.locator('.found-badge')).toContainText('해 1')
+    const negativeIndex = await selectSolution(page, ['-2'])
+    await expect(page.locator('.found-badge')).toContainText(
+      `해 ${negativeIndex + 1}`,
+    )
     await expect(page.getByText('유일해', { exact: true })).toHaveCount(0)
     const rows = page.locator('.sweep-table tbody tr')
     await expect(rows).toHaveCount(25)
@@ -752,7 +771,9 @@ test.describe('Equation Solver workspace', () => {
     const negativeCSVEvent = page.waitForEvent('download')
     await page.getByRole('button', { name: 'CSV', exact: true }).click()
     const negativeCSV = await negativeCSVEvent
-    expect(negativeCSV.suggestedFilename()).toBe('polymath-solution-1-data.csv')
+    expect(negativeCSV.suggestedFilename()).toBe(
+      `polymath-solution-${negativeIndex + 1}-data.csv`,
+    )
     const negativeData = (await readFile((await negativeCSV.path())!, 'utf8'))
       .replace(/^\uFEFF/, '')
       .trim()
@@ -763,13 +784,15 @@ test.describe('Equation Solver workspace', () => {
       expect(root).toBeLessThan(0)
       expect(root * root).toBeCloseTo(target, 7)
     }
-    await selectSolution(page, 1, ['2'])
+    const positiveIndex = await selectSolution(page, ['2'])
     await expect(rows.nth(0).locator('td')).toHaveText(['1', '1'])
     await expect(rows.last().locator('td')).toHaveText(['25', '5'])
     const positiveCSVEvent = page.waitForEvent('download')
     await page.getByRole('button', { name: 'CSV', exact: true }).click()
     const positiveCSV = await positiveCSVEvent
-    expect(positiveCSV.suggestedFilename()).toBe('polymath-solution-2-data.csv')
+    expect(positiveCSV.suggestedFilename()).toBe(
+      `polymath-solution-${positiveIndex + 1}-data.csv`,
+    )
     const positiveData = (await readFile((await positiveCSV.path())!, 'utf8'))
       .replace(/^\uFEFF/, '')
       .trim()
@@ -804,7 +827,7 @@ test.describe('Equation Solver workspace', () => {
     await page.getByRole('button', { name: '리포트 저장', exact: true }).click()
     const report = await reportEvent
     const reportText = await readFile((await report.path())!, 'utf8')
-    expect(reportText).toContain('· 해 2')
+    expect(reportText).toContain(`· 해 ${positiveIndex + 1}`)
     expect(Number(reportText.match(/\| x \| ([^|]+) \|/)?.[1])).toBeCloseTo(
       3,
       7,
@@ -818,13 +841,13 @@ test.describe('Equation Solver workspace', () => {
     expect(allReports.suggestedFilename()).toBe('polymath-all-solutions.md')
     expect(allText).toContain('· 해 1')
     expect(allText).toContain('· 해 2')
-    const reportRoots = [...allText.matchAll(/\| x \| ([^|]+) \|/g)].map(
-      (match) => Number(match[1]),
-    )
+    const reportRoots = [...allText.matchAll(/\| x \| ([^|]+) \|/g)]
+      .map((match) => Number(match[1]))
+      .sort((a, b) => a - b)
     expect(reportRoots).toHaveLength(2)
     expect(reportRoots[0]).toBeCloseTo(-3, 7)
     expect(reportRoots[1]).toBeCloseTo(3, 7)
-    await selectSolution(page, 0, ['-3'])
+    await selectSolution(page, ['-3'])
     await expect(
       page.locator('.report-content .report-title h3'),
     ).toContainText('제곱식의 두 실근')
@@ -832,7 +855,7 @@ test.describe('Equation Solver workspace', () => {
     await page.getByRole('button', { name: '리포트 저장', exact: true }).click()
     const negativeReport = await negativeReportEvent
     const negativeText = await readFile((await negativeReport.path())!, 'utf8')
-    expect(negativeText).toContain('· 해 1')
+    expect(negativeText).toContain(`· 해 ${negativeIndex + 1}`)
     expect(Number(negativeText.match(/\| x \| ([^|]+) \|/)?.[1])).toBeCloseTo(
       -3,
       7,
@@ -901,13 +924,13 @@ test.describe('Equation Solver workspace', () => {
     await expect(page.locator('.solution-count')).toHaveText(
       '발견한 실수 해 4개',
     )
-    for (const [index, root] of ['-3', '-1', '1', '3'].entries()) {
-      await selectSolution(page, index, [root])
+    for (const root of ['1', '-1', '3', '-3']) {
+      await selectSolution(page, [root])
     }
     await editor.fill('(x - 1)^2*(x + 2)^2 = 0')
     await expect(page.locator('.solution-choice')).toHaveCount(2)
-    await expect(page.locator('.solution-value strong')).toHaveText(['-2'])
-    await selectSolution(page, 1, ['1'])
+    await expect(page.locator('.solution-value strong')).toHaveText(['1'])
+    await selectSolution(page, ['-2'])
     await expect(page.getByRole('alert')).toHaveCount(0)
     await expect(page.locator('.search-summary')).toContainText('다항식')
   })
@@ -935,21 +958,21 @@ test.describe('Equation Solver workspace', () => {
       .locator('.solution-choice strong')
       .allTextContents()
     expect(roots.map((value) => Number(value.split('=')[1]))).toEqual([
-      expect.closeTo(-Math.PI, 7),
       expect.closeTo(0, 7),
       expect.closeTo(Math.PI, 7),
+      expect.closeTo(-Math.PI, 7),
     ])
-    await selectSolution(page, 1, ['0'])
+    await selectSolution(page, ['0'])
     const saveEvent = page.waitForEvent('download')
     await page.getByRole('button', { name: '프로젝트 저장' }).click()
     const file = await saveEvent
     const saved = JSON.parse(await readFile((await file.path())!, 'utf8'))
     expect(saved.searchBounds).toEqual({ min: -4, max: 4 })
     expect(saved.nonlinearSearch).toBe('auto')
-    expect(saved.selectedSolution).toBe(1)
+    expect(saved.selectedSolution).toBe(0)
     await page.reload()
     await expect(page.locator('.solution-choice')).toHaveCount(3)
-    await expect(page.locator('.solution-choice').nth(1)).toHaveAttribute(
+    await expect(page.locator('.solution-choice').first()).toHaveAttribute(
       'aria-pressed',
       'true',
     )
@@ -992,7 +1015,403 @@ test.describe('Equation Solver workspace', () => {
     await editor.fill('x^2 = 4')
     await expect(page.getByRole('alert')).toHaveCount(0)
     await expect(page.locator('.solution-choice')).toHaveCount(2)
-    await expect(page.locator('.solution-value strong')).toHaveText(['-2'])
+    await expect(page.locator('.solution-value strong')).toHaveText(['2'])
+  })
+
+  test('a capped periodic root list starts at zero and expands outward', async ({
+    page,
+  }) => {
+    await page.getByRole('tab', { name: 'Nonlinear', exact: true }).click()
+    await page.getByRole('textbox', { name: '방정식 입력' }).fill('sin(x) = 0')
+    await expect(page.locator('.solution-choice')).toHaveCount(32)
+    const roots = (
+      await page.locator('.solution-choice strong').allTextContents()
+    ).map((text) => Number(text.split('=')[1]))
+    expect(roots.slice(0, 5)).toEqual([
+      expect.closeTo(0, 7),
+      expect.closeTo(Math.PI, 7),
+      expect.closeTo(-Math.PI, 7),
+      expect.closeTo(2 * Math.PI, 7),
+      expect.closeTo(-2 * Math.PI, 7),
+    ])
+    for (let i = 1; i < roots.length; i++) {
+      expect(Math.abs(roots[i]) + 0.000001).toBeGreaterThanOrEqual(
+        Math.abs(roots[i - 1]),
+      )
+    }
+    await expect(page.locator('.solution-value strong')).toHaveText(['0'])
+    await expect(page.locator('.search-summary')).toContainText(
+      /범위 밖의 해|모든 해를 보장하지/,
+    )
+    await expect(page.locator('.search-summary')).toContainText(/32|최대|제한/)
+    await expect(page.getByRole('alert')).toHaveCount(0)
+  })
+
+  test('a far periodic branch stays local and stops where no real solution exists', async ({
+    page,
+  }) => {
+    await importProject(page, {
+      mode: 'nonlinear',
+      nonlinearSearch: 'auto',
+      title: '먼 주기 함수 해 추적',
+      description: '',
+      source: 'sin(x)*cos(x) = target',
+      parameters: [
+        {
+          id: 'target',
+          name: 'target',
+          value: 0.25,
+          min: 0,
+          max: 1,
+          step: 0.05,
+        },
+      ],
+      sweepName: 'target',
+      searchBounds: { min: -41, max: -39 },
+    })
+    await expect(page.locator('.solution-choice')).toHaveCount(2)
+    await expect(page.locator('.result-footer')).toContainText('계산 완료')
+    const svg = page.locator('.solution-chart svg')
+    await expect(svg.locator('.sc-curve')).toHaveCount(1)
+    const ticks = (
+      await svg.locator('.sc-axis-label[text-anchor="end"]').allTextContents()
+    ).map(Number)
+    expect(Math.max(...ticks)).toBeLessThan(-38)
+    expect(Math.max(...ticks) - Math.min(...ticks)).toBeLessThan(3)
+    const rows = page.locator('.sweep-table tbody tr')
+    await expect(rows).toHaveCount(21)
+    await expect(
+      page
+        .getByRole('row', { name: 'target 0.55 탐색', exact: true })
+        .locator('td')
+        .last(),
+    ).toHaveText('해 없음')
+    await expect(rows.last().locator('td')).toHaveText(['1', '해 없음'])
+    const valid = await rows.evaluateAll((elements) =>
+      elements.flatMap((row) => {
+        const cells = [...row.querySelectorAll('td')].map(
+          (cell) => cell.textContent?.trim() || '',
+        )
+        return cells[1] === '해 없음'
+          ? []
+          : [[Number(cells[0]), Number(cells[1])]]
+      }),
+    )
+    expect(valid.length).toBeGreaterThan(5)
+    for (const [target, root] of valid) {
+      expect(root).toBeGreaterThan(-41)
+      expect(root).toBeLessThan(-39)
+      expect(Math.sin(root) * Math.cos(root)).toBeCloseTo(target, 5)
+    }
+    const midpoint = Number(
+      await svg
+        .locator('.sc-axis-label[text-anchor="middle"]')
+        .filter({ hasText: /^0\.5$/ })
+        .getAttribute('x'),
+    )
+    const path = await svg.locator('.sc-curve').getAttribute('d')
+    const curveX = [...(path || '').matchAll(/[ML]([-\d.]+),[-\d.]+/g)].map(
+      (match) => Number(match[1]),
+    )
+    expect(curveX.length).toBeGreaterThan(10)
+    expect(Math.max(...curveX)).toBeLessThanOrEqual(midpoint + 1)
+    await page.screenshot({
+      path: '/tmp/polymath-far-periodic-branch.png',
+      fullPage: true,
+    })
+  })
+
+  test('selected roots open concurrent simulations with shared values and independent branch identity', async ({
+    page,
+  }) => {
+    await importProject(page, {
+      mode: 'nonlinear',
+      nonlinearSearch: 'auto',
+      title: '두 실근의 동시 시뮬레이션',
+      description: '',
+      source: 'x^2 = p',
+      parameters: [{ id: 'p', name: 'p', value: 4, min: 1, max: 9, step: 1 }],
+      sweepName: 'p',
+    })
+    await expect(page.locator('.solution-choice')).toHaveCount(2)
+    const positiveIndex = await selectSolution(page, ['2'])
+    await page
+      .getByRole('button', {
+        name: `해 ${positiveIndex + 1} 시뮬레이션 추가`,
+        exact: true,
+      })
+      .click()
+    await expect(page.locator('.simulation-panel')).toHaveCount(1)
+    const negativeIndex = await selectSolution(page, ['-2'])
+    await page
+      .getByRole('button', {
+        name: `해 ${negativeIndex + 1} 시뮬레이션 추가`,
+        exact: true,
+      })
+      .click()
+    await expect(
+      page.locator('.simulation-grid .simulation-panel'),
+    ).toHaveCount(2)
+    const positive = page.locator(
+      `.simulation-panel[aria-label="해 ${positiveIndex + 1} 시뮬레이션"]`,
+    )
+    const negative = page.locator(
+      `.simulation-panel[aria-label="해 ${negativeIndex + 1} 시뮬레이션"]`,
+    )
+    await expect(
+      positive.locator('.simulation-panel-current strong'),
+    ).toHaveText('x = 2')
+    await expect(
+      negative.locator('.simulation-panel-current strong'),
+    ).toHaveText('x = -2')
+    const slider = page
+      .locator('.results-parameters')
+      .getByRole('slider', { name: 'p 슬라이더', exact: true })
+    await slider.fill('9')
+    await expect(
+      positive.locator('.simulation-panel-current strong'),
+    ).toHaveText('x = 3')
+    await expect(
+      negative.locator('.simulation-panel-current strong'),
+    ).toHaveText('x = -3')
+    await expect(positive.locator('.simulation-panel-anchor')).toContainText(
+      'x = 2',
+    )
+    await expect(negative.locator('.simulation-panel-anchor')).toContainText(
+      'x = -2',
+    )
+    for (const [panel, expected] of [
+      [positive, '3'],
+      [negative, '-3'],
+    ] as const) {
+      await panel.locator('.simulation-panel-data summary').click()
+      const rows = panel.locator('.simulation-panel-table-scroll tbody tr')
+      await expect(rows).toHaveCount(9)
+      await expect(rows.last().locator('td')).toHaveText(['9', expected])
+    }
+    await selectSolution(page, ['3'])
+    await expect(page.locator('.simulation-panel')).toHaveCount(2)
+    await page.screenshot({
+      path: '/tmp/polymath-multiple-simulations-desktop.png',
+      fullPage: true,
+    })
+    const savedEvent = page.waitForEvent('download')
+    await page
+      .getByRole('button', { name: '프로젝트 저장', exact: true })
+      .click()
+    const file = await savedEvent
+    const saved = JSON.parse(await readFile((await file.path())!, 'utf8'))
+    expect(saved.simulations).toHaveLength(2)
+    expect(
+      saved.simulations.map((anchor: { values: number[] }) => anchor.values),
+    ).toEqual([[2], [-2]])
+    await page.reload()
+    await expect(page.locator('.simulation-panel-current strong')).toHaveText([
+      'x = 3',
+      'x = -3',
+    ])
+    await page.getByRole('tab', { name: 'Linear', exact: true }).click()
+    await importProject(page, saved)
+    await expect(page.locator('.simulation-panel-current strong')).toHaveText([
+      'x = 3',
+      'x = -3',
+    ])
+    await expect(positive.locator('.simulation-panel-anchor')).toContainText(
+      'x = 2',
+    )
+    await expect(negative.locator('.simulation-panel-anchor')).toContainText(
+      'x = -2',
+    )
+    await positive
+      .getByRole('button', {
+        name: `해 ${positiveIndex + 1} 시뮬레이션 닫기`,
+        exact: true,
+      })
+      .click()
+    await expect(page.locator('.simulation-panel')).toHaveCount(1)
+    await expect(
+      negative.locator('.simulation-panel-current strong'),
+    ).toHaveText('x = -3')
+    await slider.fill('4')
+    await expect(
+      negative.locator('.simulation-panel-current strong'),
+    ).toHaveText('x = -2')
+  })
+
+  test('parameter range settings remain beside the model and fullscreen enlarges each simulation canvas', async ({
+    page,
+  }) => {
+    await page.getByRole('tab', { name: 'Nonlinear', exact: true }).click()
+    await openExample(page, '제곱식의 두 실근')
+    const model = page.locator('.parameter-panel')
+    const controls = page.locator('.results-parameters')
+    await expect(model.getByRole('slider')).toHaveCount(0)
+    await expect(
+      controls.getByRole('slider', { name: 'target 슬라이더', exact: true }),
+    ).toBeVisible()
+    await model
+      .getByRole('button', { name: '파라미터 범위 설정', exact: true })
+      .click()
+    await expect(
+      model.getByRole('spinbutton', { name: 'target 최솟값', exact: true }),
+    ).toHaveValue('1')
+    await expect(
+      model.getByRole('spinbutton', { name: 'target 최댓값', exact: true }),
+    ).toHaveValue('25')
+    await expect(
+      model.getByRole('spinbutton', { name: 'target 간격', exact: true }),
+    ).toHaveValue('1')
+    await page
+      .getByRole('button', { name: '해 1 시뮬레이션 추가', exact: true })
+      .click()
+    await page
+      .getByRole('button', { name: '해 2 시뮬레이션 추가', exact: true })
+      .click()
+    await expect(page.locator('.simulation-panel')).toHaveCount(2)
+    const svg = page.locator('.simulation-panel .solution-chart svg').first()
+    const normalSize = await svg.boundingBox()
+    expect(normalSize?.height).toBeGreaterThan(150)
+    await page
+      .getByRole('button', { name: '결과 화면 확대', exact: true })
+      .click()
+    await expect(
+      page.getByRole('dialog', { name: '결과 탐색 전체화면', exact: true }),
+    ).toBeVisible()
+    await expect(page.locator('.model-column')).not.toBeVisible()
+    await expect
+      .poll(async () => (await svg.boundingBox())?.height || 0)
+      .toBeGreaterThan(normalSize!.height + 100)
+    await controls
+      .getByRole('slider', { name: 'target 슬라이더', exact: true })
+      .fill('9')
+    await expect(page.locator('.simulation-panel-current strong')).toHaveText([
+      'x = 3',
+      'x = -3',
+    ])
+    const toast = page.getByRole('button', { name: '알림 닫기', exact: true })
+    if (await toast.isVisible()) await toast.click()
+    await svg.evaluate((element) => element.scrollIntoView({ block: 'center' }))
+    await page.screenshot({
+      path: '/tmp/polymath-multiple-simulations-fullscreen.png',
+      fullPage: true,
+    })
+    await page.setViewportSize({ width: 390, height: 844 })
+    await expect(page.locator('.simulation-panel')).toHaveCount(2)
+    await expect(
+      controls.getByRole('slider', { name: 'target 슬라이더', exact: true }),
+    ).toBeVisible()
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      ),
+    ).toBe(false)
+    const mobileSize = await svg.boundingBox()
+    expect(mobileSize?.height).toBeGreaterThan(350)
+    await svg.evaluate((element) => element.scrollIntoView({ block: 'center' }))
+    await page.screenshot({
+      path: '/tmp/polymath-multiple-simulations-mobile.png',
+      fullPage: true,
+    })
+    await page
+      .getByRole('button', { name: '기본 레이아웃', exact: true })
+      .click()
+    await expect(page.locator('.model-column')).toBeVisible()
+    await expect(page.locator('.simulation-panel')).toHaveCount(2)
+  })
+
+  test('distinct tiny roots can each open a simulation without being merged', async ({
+    page,
+  }) => {
+    await page.getByRole('tab', { name: 'Nonlinear', exact: true }).click()
+    await page
+      .getByRole('textbox', { name: '방정식 입력' })
+      .fill('x*(x - 1e-15) = 0')
+    await expect(page.locator('.solution-choice')).toHaveCount(2)
+    await page
+      .getByRole('button', { name: '해 1 시뮬레이션 추가', exact: true })
+      .click()
+    await expect(page.locator('.simulation-panel')).toHaveCount(1)
+    const second = page.getByRole('button', {
+      name: '해 2 시뮬레이션 추가',
+      exact: true,
+    })
+    await expect(second).toBeEnabled()
+    await second.click()
+    await expect(page.locator('.simulation-panel')).toHaveCount(2)
+    await expect(page.locator('.simulation-panel-current strong')).toHaveText([
+      'x = 0',
+      'x = 1e-15',
+    ])
+    const editor = page.getByRole('textbox', { name: '방정식 입력' })
+    await editor.focus()
+    await editor.evaluate((element: HTMLTextAreaElement) =>
+      element.setSelectionRange(0, 2),
+    )
+    await editor.press('Tab')
+    await expect(editor).toHaveValue('  (x - 1e-15) = 0')
+    await expect(page.locator('.simulation-panel')).toHaveCount(0)
+    await expect(page.locator('.solution-choice')).toHaveCount(1)
+  })
+
+  test('an unavailable current root keeps valid partial curves and recovers the same anchored branch', async ({
+    page,
+  }) => {
+    await importProject(page, {
+      mode: 'nonlinear',
+      nonlinearSearch: 'auto',
+      title: '해가 없는 현재값과 부분 곡선',
+      description: '',
+      source: 'sin(x)*cos(x) = target',
+      parameters: [
+        {
+          id: 'target',
+          name: 'target',
+          value: 0.25,
+          min: 0,
+          max: 1,
+          step: 0.05,
+        },
+      ],
+      sweepName: 'target',
+      searchBounds: { min: -41, max: -39 },
+    })
+    await expect(page.locator('.solution-choice')).toHaveCount(2)
+    await page
+      .getByRole('button', { name: '해 1 시뮬레이션 추가', exact: true })
+      .click()
+    const panel = page.locator('.simulation-panel')
+    await expect(
+      panel.locator('.simulation-panel-current strong'),
+    ).toContainText('x = -39.5317')
+    const slider = page
+      .locator('.results-parameters')
+      .getByRole('slider', { name: 'target 슬라이더', exact: true })
+    await slider.fill('0.75')
+    await expect(panel.locator('.simulation-panel-current strong')).toHaveText(
+      '해 없음',
+    )
+    await expect(panel.locator('.simulation-panel-error')).toBeVisible()
+    const curve = panel.locator('.sc-curve')
+    await expect(curve).toHaveCount(1)
+    expect((await curve.getAttribute('d'))?.length).toBeGreaterThan(100)
+    await expect(panel.locator('.sc-current-dot')).toHaveCount(0)
+    await panel.locator('.simulation-panel-data summary').click()
+    await expect(
+      panel
+        .locator('.simulation-panel-table-scroll tbody tr')
+        .last()
+        .locator('td'),
+    ).toHaveText(['1', '해 없음'])
+    await page.screenshot({
+      path: '/tmp/polymath-partial-simulation-no-current-root.png',
+      fullPage: true,
+    })
+    await slider.fill('0.25')
+    await expect(
+      panel.locator('.simulation-panel-current strong'),
+    ).toContainText('x = -39.5317')
+    await expect(panel.locator('.simulation-panel-error')).toHaveCount(0)
+    await expect(page.locator('.simulation-panel')).toHaveCount(1)
   })
 
   test('manual search remains available and its selected mode survives export and import', async ({
@@ -1036,16 +1455,13 @@ test.describe('Equation Solver workspace', () => {
     await page.getByRole('tab', { name: 'Nonlinear', exact: true }).click()
     await openExample(page, '세 실근을 가진 삼차식')
     await expect(page.locator('.solution-choice')).toHaveCount(3)
-    for (const [index, root] of ['1', '2', '3'].entries()) {
-      await selectSolution(page, index, [root])
+    for (const root of ['1', '2', '3']) {
+      await selectSolution(page, [root])
     }
     await openExample(page, '원과 직선의 교점')
     await expect(page.locator('.solution-choice')).toHaveCount(2)
-    await expect(page.locator('.solution-value strong')).toHaveText([
-      '-3',
-      '-4',
-    ])
-    await selectSolution(page, 1, ['4', '3'])
+    await selectSolution(page, ['-3', '-4'])
+    await selectSolution(page, ['4', '3'])
     await expect(page.locator('.solution-value strong')).toHaveText(['4', '3'])
     await page.getByRole('button', { name: '해석 리포트' }).click()
     await page
@@ -1077,7 +1493,7 @@ test.describe('Equation Solver workspace', () => {
     ])
     await openExample(page, '비선형 물질수지와 평형 농도')
     await expect(page.locator('.solution-choice')).toHaveCount(2)
-    await selectSolution(page, 1, ['1.236068'])
+    await selectSolution(page, ['1.236068'])
     await expect
       .poll(async () =>
         Number(await page.locator('.solution-value strong').innerText()),
@@ -1184,7 +1600,7 @@ test.describe('Equation Solver workspace', () => {
   }) => {
     await page.getByRole('tab', { name: 'Nonlinear', exact: true }).click()
     await openExample(page, '제곱식의 두 실근')
-    await selectSolution(page, 1, ['2'])
+    await selectSolution(page, ['2'])
     await page
       .getByRole('slider', { name: 'target 슬라이더', exact: true })
       .fill('16')
@@ -1195,7 +1611,7 @@ test.describe('Equation Solver workspace', () => {
     const saved = JSON.parse(await readFile((await file.path())!, 'utf8'))
     expect(saved.mode).toBe('nonlinear')
     expect(saved.nonlinearSearch).toBe('auto')
-    expect(saved.selectedSolution).toBe(1)
+    expect(saved.selectedSolution).toBe(0)
     expect(saved.parameters[0].value).toBe(16)
     await page.getByRole('tab', { name: 'Linear', exact: true }).click()
     await importProject(page, saved)
