@@ -1,12 +1,23 @@
 import { ModelError } from './index'
 
-type Node =
+export type NonlinearNode =
   | { kind: 'number'; value: number }
   | { kind: 'name'; name: string }
-  | { kind: 'unary'; sign: '+' | '-'; child: Node }
-  | { kind: 'binary'; operator: string; left: Node; right: Node }
-  | { kind: 'call'; name: string; args: Node[] }
-type Expression = { node: Node; line: number; references: Set<string> }
+  | { kind: 'unary'; sign: '+' | '-'; child: NonlinearNode }
+  | {
+      kind: 'binary'
+      operator: string
+      left: NonlinearNode
+      right: NonlinearNode
+    }
+  | { kind: 'call'; name: string; args: NonlinearNode[] }
+type Node = NonlinearNode
+export type NonlinearExpression = {
+  node: Node
+  line: number
+  references: Set<string>
+}
+type Expression = NonlinearExpression
 type Definition = Expression & { name: string }
 type Condition = {
   name: string
@@ -85,7 +96,7 @@ function assertName(name: string, line?: number) {
   }
 }
 
-function parseExpression(source: string, line: number): Expression {
+export function parseNonlinearExpression(source: string, line = 1): Expression {
   const tokens: Token[] = []
   for (let position = 0; position < source.length; ) {
     const rest = source.slice(position)
@@ -235,7 +246,9 @@ function parseExpression(source: string, line: number): Expression {
   return { node, line, references }
 }
 
-function evaluateExpression(
+const parseExpression = parseNonlinearExpression
+
+export function evaluateNonlinearExpression(
   expression: Expression,
   environment: Map<string, number>,
 ): number {
@@ -279,6 +292,8 @@ function evaluateExpression(
   }
   return evaluate(expression.node)
 }
+
+const evaluateExpression = evaluateNonlinearExpression
 
 /** Parse once and evaluate repeatedly with new root values or external parameters. */
 export function compileNonlinear(

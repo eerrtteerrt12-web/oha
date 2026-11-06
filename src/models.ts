@@ -17,6 +17,9 @@ export type Project = {
   }>
   sweepName: string
   conditionNorm?: ConditionNorm
+  nonlinearSearch?: 'auto' | 'manual'
+  searchBounds?: { min: number; max: number }
+  selectedSolution?: number
 }
 
 export const DEFAULT_PROJECT: Project = {
@@ -33,11 +36,12 @@ export const DEFAULT_NONLINEAR_PROJECT: Project = {
   mode: 'nonlinear',
   title: '새 비선형 모델',
   description:
-    'f(미지수) = 잔차식을 입력하고 탐색 구간 또는 초기 추정값을 지정하세요.',
+    '방정식을 그대로 입력하면 실수 해를 자동으로 탐색합니다. 발견한 해를 선택해 결과를 비교하세요.',
   source: '',
   parameters: [],
   sweepName: '',
   conditionNorm: 'infinity',
+  nonlinearSearch: 'auto',
 }
 
 export const NONLINEAR_EXAMPLES: Array<{
@@ -47,14 +51,15 @@ export const NONLINEAR_EXAMPLES: Array<{
 }> = [
   {
     id: 'positive-root',
-    category: '기초 · 하나의 미지수',
+    category: '기초 · 여러 실근과 파라미터',
     project: {
       mode: 'nonlinear',
-      title: '제곱식의 양의 근',
+      nonlinearSearch: 'auto',
+      title: '제곱식의 두 실근',
       description:
-        'x² = target의 양의 해를 구합니다. target을 바꾸면 제곱근이 어떻게 달라지는지 확인할 수 있습니다.',
+        'x² = target에서 양수와 음수 실근을 함께 탐색합니다. 각 해를 선택하고 target 변화에 따른 결과를 비교하세요.',
       source:
-        '# f(x)의 오른쪽 식이 0이 되는 x를 찾습니다\nf(x) = x^2 - target\nx(min) = 0\nx(max) = 10',
+        '# 식을 그대로 적으면 실수 해를 자동으로 탐색합니다\nx^2 = target',
       parameters: [
         { id: 'target', name: 'target', value: 4, min: 1, max: 25, step: 1 },
       ],
@@ -63,15 +68,16 @@ export const NONLINEAR_EXAMPLES: Array<{
     },
   },
   {
-    id: 'negative-root',
-    category: '기초 · 탐색 구간과 여러 근',
+    id: 'cubic-roots',
+    category: '기초 · 세 개의 실근',
     project: {
       mode: 'nonlinear',
-      title: '같은 식에서 음의 근 찾기',
+      nonlinearSearch: 'auto',
+      title: '세 실근을 가진 삼차식',
       description:
-        'x² = 4에는 두 해가 있습니다. 탐색 구간을 -3~0으로 정하면 음의 해 x = -2를 찾습니다.',
+        '하나의 방정식에서 x = 1, 2, 3을 탐색합니다. 해 목록에서 각 결과를 선택해 잔차와 리포트를 확인하세요.',
       source:
-        '# 양의 근과 음의 근은 서로 다른 구간에서 탐색하세요\nf(x) = x^2 - 4\nx(min) = -3\nx(max) = 0',
+        '# 한 방정식에도 여러 실수 해가 있을 수 있습니다\n(x - 1)*(x - 2)*(x - 3) = 0',
       parameters: [],
       sweepName: '',
       conditionNorm: 'infinity',
@@ -79,14 +85,15 @@ export const NONLINEAR_EXAMPLES: Array<{
   },
   {
     id: 'circle-intersection',
-    category: '연립 · 초기 추정값',
+    category: '연립 · 여러 교점 자동 탐색',
     project: {
       mode: 'nonlinear',
+      nonlinearSearch: 'auto',
       title: '원과 직선의 교점',
       description:
-        'x² + y² = 25와 x - y = 1을 동시에 풉니다. 초기 추정값 (4, 3)은 한 교점을 선택하며, 다른 시작값에서는 다른 교점을 찾을 수 있습니다.',
+        '원과 직선의 두 교점 (-3, -4), (4, 3)을 자동으로 탐색합니다. 해 목록에서 각 교점을 선택하세요.',
       source:
-        '# 식마다 f(미지수)를 하나씩 정의합니다\nf(x) = x^2 + y^2 - 25\nf(y) = x - y - 1\nx(0) = 4\ny(0) = 3',
+        '# 미지수 수와 독립적인 방정식 수를 맞춰 주세요\nx^2 + y^2 = 25\nx - y = 1',
       parameters: [],
       sweepName: '',
       conditionNorm: 'infinity',
@@ -97,11 +104,12 @@ export const NONLINEAR_EXAMPLES: Array<{
     category: '화학공학 · 평형 농도',
     project: {
       mode: 'nonlinear',
+      nonlinearSearch: 'auto',
       title: '비선형 물질수지와 평형 농도',
       description:
-        '평형 관계 k·C² + C = C0를 만족하는 양의 농도 C를 구합니다. k와 C0를 바꾸며 정상상태 농도를 비교하세요.',
+        'k·C² + C = C0의 두 실근을 탐색합니다. 기본값에서는 약 -3.236068과 1.236068이며, 실제 농도로 해석할 때는 양수 해를 선택하세요.',
       source:
-        '# k*C^2 + C = C0를 잔차식으로 표현합니다\nf(C) = k*C^2 + C - C0\nC(min) = 0\nC(max) = 10',
+        '# 수학적 실근 중 물리적으로 가능한 농도를 선택하세요\nk*C^2 + C = C0',
       parameters: [
         { id: 'k', name: 'k', value: 0.5, min: 0.1, max: 2, step: 0.1 },
         { id: 'C0', name: 'C0', value: 2, min: 0.5, max: 5, step: 0.1 },
@@ -115,11 +123,12 @@ export const NONLINEAR_EXAMPLES: Array<{
     category: '응용 · 보조식과 로그 함수',
     project: {
       mode: 'nonlinear',
+      nonlinearSearch: 'auto',
       title: '보조식으로 나누어 쓰는 비선형 모델',
       description:
-        '제공된 문법 문서의 단일 미지수 예제입니다. t를 보조식으로 분리하고 상용로그 log를 사용합니다. 이 구간의 해는 x = 20입니다.',
+        '보조식 t를 분리한 f(x) 문법도 자동 탐색에 사용할 수 있습니다. 상용로그 log를 사용하며, 자동 탐색에서 x = 20을 찾습니다.',
       source:
-        '# log는 밑이 10인 로그입니다. 자연로그는 ln을 사용하세요\nf(x) = t + 4*x^2 - 1620\nt = x*log(x/2)\nx(min) = 0.1\nx(max) = 100',
+        '# f(x) 형식에서는 이름=수식을 보조식으로 사용할 수 있습니다\nf(x) = t + 4*x^2 - 1620\nt = x*log(x/2)',
       parameters: [],
       sweepName: '',
       conditionNorm: 'infinity',

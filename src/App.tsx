@@ -39,6 +39,8 @@ import {
   classifyCondition,
   type ConditionNorm,
   type SolvePayload,
+  type SolveResult,
+  type SearchSummary,
 } from './engine'
 
 const STORAGE_KEY = 'polymath-studio-project-v1'
@@ -65,6 +67,19 @@ function isProject(value: unknown): value is Project {
     typeof p.source === 'string' &&
     p.source.length <= 30000 &&
     typeof p.sweepName === 'string' &&
+    (p.nonlinearSearch === undefined ||
+      p.nonlinearSearch === 'auto' ||
+      p.nonlinearSearch === 'manual') &&
+    (p.selectedSolution === undefined ||
+      (Number.isInteger(p.selectedSolution) &&
+        p.selectedSolution >= 0 &&
+        p.selectedSolution < 32)) &&
+    (p.searchBounds === undefined ||
+      (!!p.searchBounds &&
+        Number.isFinite(p.searchBounds.min) &&
+        Number.isFinite(p.searchBounds.max) &&
+        Number.isFinite(p.searchBounds.max - p.searchBounds.min) &&
+        p.searchBounds.min < p.searchBounds.max)) &&
     (p.mode === undefined || p.mode === 'linear' || p.mode === 'nonlinear') &&
     (p.conditionNorm === undefined ||
       p.conditionNorm === 'infinity' ||
@@ -109,6 +124,7 @@ export default function App() {
   const [project, setProject] = useState<Project>(initialProject)
   const [payload, setPayload] = useState<SolvePayload | null>(null)
   const [error, setError] = useState('')
+  const [searchInfo, setSearchInfo] = useState<SearchSummary | null>(null)
   const [pending, setPending] = useState(false)
   const [workerReady, setWorkerReady] = useState(false)
   const [revision, setRevision] = useState(0)
@@ -135,6 +151,10 @@ export default function App() {
   const result = payload?.result
   const mode = project.mode ?? 'linear'
   const nonlinear = mode === 'nonlinear'
+  const nonlinearSearch = project.nonlinearSearch ?? 'auto'
+  const automatic = nonlinear && nonlinearSearch === 'auto'
+  const solutionIndex = project.selectedSolution ?? 0
+  const solutions = payload?.solutions ?? (result ? [result] : [])
   const evaluation = result?.kind === 'evaluation'
   const displayWarnings =
     result?.warnings.filter(
@@ -155,9 +175,10 @@ export default function App() {
   )
   const sourceLines = project.source.split('\n')
   const equationCount = sourceLines.filter((l) =>
-    nonlinear
+    nonlinear && project.source.split('\n').some((x) => /^\s*f\(/.test(x))
       ? /^\s*f\([A-Za-z][A-Za-z0-9_]*\)\s*=/.test(l)
-      : l.split('#')[0].trim(),
+      : l.split('#')[0].trim() &&
+        !/^\s*[A-Za-z][A-Za-z0-9_]*\((min|max|0)\)/.test(l),
   ).length
   useEffect(() => {
     const w = new Worker(
@@ -170,10 +191,18 @@ export default function App() {
       setPending(false)
       if (data.ok) {
         setPayload(data.payload)
+        setSearchInfo(data.payload.search ?? null)
+        if (data.payload.selectedSolution !== undefined)
+          setProject((p) =>
+            p.selectedSolution === data.payload.selectedSolution
+              ? p
+              : { ...p, selectedSolution: data.payload.selectedSolution },
+          )
         setError('')
       } else {
         setError(data.line ? `${data.line}행 · ${data.error}` : data.error)
         setPayload(null)
+        setSearchInfo(data.search ?? null)
       }
     }
     w.onerror = () => {
@@ -193,10 +222,12 @@ export default function App() {
       setPayload(null)
       setPending(false)
       setError('')
+      setSearchInfo(null)
       return
     }
     setPending(true)
     setError('')
+    setSearchInfo(null)
     setSelectedIndex(null)
     const timer = setTimeout(() => {
       worker.current?.postMessage({
@@ -204,6 +235,9 @@ export default function App() {
         source: project.source,
         conditionNorm,
         mode,
+        nonlinearSearch,
+        searchBounds: project.searchBounds,
+        solutionIndex,
         parameters: Object.fromEntries(
           project.parameters.map((p) => [p.name, p.value]),
         ),
@@ -225,6 +259,9 @@ export default function App() {
     project.sweepName,
     conditionNorm,
     mode,
+    nonlinearSearch,
+    project.searchBounds,
+    solutionIndex,
     revision,
     workerReady,
   ])
@@ -422,17 +459,62 @@ export default function App() {
     setParamValue('1')
     setParamError('')
   }
+  function buildReport(target: SolveResult, index?: number) {
+    const isEvaluation = target.kind === 'evaluation'
+    return (
+      [
+        `# ${project.title}${index === undefined ? '' : ` · 해 ${index + 1}`}`,
+        project.description,
+        `유형: ${nonlinear ? 'Nonlinear' : 'Linear'}`,
+        searchInfo
+          ? `탐색: ${searchInfo.method}\n\n범위: ${searchInfo.min} ~ ${searchInfo.max}\n\n${searchInfo.note}`
+          : '',
+        target.method
+          ? `방법: ${target.method} · 반복 ${target.iterations ?? 0}회`
+          : '',
+        nonlinear && !isEvaluation
+          ? '발견한 하나의 실수 해입니다. 다른 해가 존재할 수 있으며 조건수는 해 주변 Jacobian의 국소 값입니다.'
+          : '',
+        `## 입력 수식\n\n\`\`\`text\n${project.source}\n\`\`\``,
+        `## 파라미터\n\n${project.parameters.map((p) => `- ${p.name} = ${p.value}`).join('\n') || '없음'}`,
+        `## 해\n\n| 변수 | 값 |\n| --- | ---: |\n${target.variables.map((name, i) => `| ${name} | ${target.values[i].toPrecision(12)} |`).join('\n')}`,
+        target.auxiliary && Object.keys(target.auxiliary).length
+          ? `## 보조식 계산값\n\n${Object.entries(target.auxiliary)
+              .map(([name, value]) => `- ${name} = ${value.toPrecision(12)}`)
+              .join('\n')}`
+          : '',
+        `최대 절대 잔차: ${isEvaluation ? '해당 없음' : target.maxResidual.toExponential(5)}`,
+        `조건수 (${target.conditionNorm === '2' ? '2-norm · SVD' : '∞-norm'}): ${isEvaluation ? '해당 없음' : Number.isNaN(target.condition) ? '계산 불가' : target.condition.toPrecision(8)}`,
+        `민감도: ${isEvaluation ? '해당 없음' : classifyCondition(target.condition).label}`,
+        '참고 기준: κ < 10^4 안정, 10^4 ≤ κ < 10^8 민감, κ ≥ 10^8 매우 민감. 참고 범위이며 입력 오차와 단위에 따라 해석해야 합니다.',
+        target.conditionError || '',
+        `계산 엔진: ${target.engine}`,
+        target.warnings.join('\n'),
+      ]
+        .filter(Boolean)
+        .join('\n\n') + '\n'
+    )
+  }
   function exportReport() {
     if (!result || pending || error) return
-    const body = `# ${project.title}\n\n${project.description}\n\n유형: ${nonlinear ? 'Nonlinear' : 'Linear'}\n\n${result.method ? `방법: ${result.method} · 반복 ${result.iterations ?? 0}회\n\n` : ''}${nonlinear && !evaluation ? '초기값·구간에 따라 다른 해에 수렴할 수 있습니다. 조건수는 해 주변 Jacobian의 국소 값입니다.\n\n' : ''}## 입력 수식\n\n\`\`\`text\n${project.source}\n\`\`\`\n\n## 파라미터\n\n${project.parameters.map((p) => `- ${p.name} = ${p.value}`).join('\n') || '없음'}\n\n## 해\n\n| 변수 | 값 |\n| --- | ---: |\n${result.variables.map((v, i) => `| ${v} | ${result.values[i].toPrecision(12)} |`).join('\n')}\n\n${
-      result.auxiliary && Object.keys(result.auxiliary).length
-        ? `## 보조식 계산값\n\n${Object.entries(result.auxiliary)
-            .map(([name, value]) => `- ${name} = ${value.toPrecision(12)}`)
-            .join('\n')}\n\n`
-        : ''
-    }최대 절대 잔차: ${evaluation ? '해당 없음' : result.maxResidual.toExponential(5)}\n\n조건수 (${result.conditionNorm === '2' ? '2-norm · SVD' : '∞-norm'}): ${evaluation ? '해당 없음' : Number.isNaN(result.condition) ? '계산 불가' : result.condition.toPrecision(8)}\n\n민감도: ${evaluation ? '해당 없음' : classifyCondition(result.condition).label}\n\n참고 기준: κ < 10^4 안정, 10^4 ≤ κ < 10^8 민감, κ ≥ 10^8 매우 민감. 이 구분은 일반적인 참고 범위이며 입력 오차와 단위에 따라 해석해야 합니다.\n\n${result.conditionError || ''}\n\n계산 엔진: ${result.engine}\n\n${result.warnings.join('\n')}\n`
-    downloadFile('polymath-report.md', body, 'text/markdown;charset=utf-8')
+    downloadFile(
+      'polymath-report.md',
+      buildReport(
+        result,
+        automatic ? (payload?.selectedSolution ?? solutionIndex) : undefined,
+      ),
+      'text/markdown;charset=utf-8',
+    )
     setToast('계산 리포트를 내려받았습니다.')
+  }
+  function exportAllReports() {
+    if (!solutions.length || pending || error) return
+    downloadFile(
+      'polymath-all-solutions.md',
+      solutions.map((item, i) => buildReport(item, i)).join('\n---\n\n'),
+      'text/markdown;charset=utf-8',
+    )
+    setToast('발견한 각 실수 해의 리포트를 내려받았습니다.')
   }
   function exportCSV() {
     if (!result || !payload || pending || (sweepParam && payload.datasetError))
@@ -450,7 +532,13 @@ export default function App() {
           ['variable', 'value'].join(','),
           ...result.variables.map((v, i) => [v, result.values[i]].join(',')),
         ].join('\n')
-    downloadFile('polymath-data.csv', '\uFEFF' + csv, 'text/csv;charset=utf-8')
+    downloadFile(
+      automatic
+        ? `polymath-solution-${(payload?.selectedSolution ?? solutionIndex) + 1}-data.csv`
+        : 'polymath-data.csv',
+      '\uFEFF' + csv,
+      'text/csv;charset=utf-8',
+    )
     setToast('데이터를 CSV로 내려받았습니다.')
   }
   async function importProject(file?: File) {
@@ -705,7 +793,9 @@ export default function App() {
                   </span>
                   <span>
                     {nonlinear
-                      ? 'f(미지수) = 0이 될 잔차식'
+                      ? automatic
+                        ? '식만 입력 · 실수 해 자동 탐색'
+                        : 'f(미지수) = 0이 될 잔차식'
                       : '한 줄에 하나의 방정식'}
                   </span>
                 </div>
@@ -724,11 +814,17 @@ export default function App() {
                     maxLength={30000}
                     value={project.source}
                     onChange={(e) =>
-                      setProject((p) => ({ ...p, source: e.target.value }))
+                      setProject((p) => ({
+                        ...p,
+                        source: e.target.value,
+                        selectedSolution: 0,
+                      }))
                     }
                     placeholder={
                       nonlinear
-                        ? 'f(x) = x^2 - 4\nx(min) = 0\nx(max) = 3'
+                        ? automatic
+                          ? 'x^2 = 4\n\n# 연립식도 한 줄에 하나씩 입력하세요'
+                          : 'f(x) = x^2 - 4\nx(min) = 0\nx(max) = 3'
                         : '방정식을 입력하세요\n예: 2x + y = 10'
                     }
                     onKeyDown={(e) => {
@@ -768,6 +864,63 @@ export default function App() {
                     <ArrowRight size={13} />
                   </button>
                 </div>
+                {nonlinear && (
+                  <details className="nonlinear-settings">
+                    <summary>
+                      <Settings2 size={14} />
+                      고급 탐색 설정
+                      <ChevronDown size={13} />
+                    </summary>
+                    <div className="nonlinear-settings-body">
+                      <label htmlFor="nonlinear-search">해 탐색 방식</label>
+                      <select
+                        id="nonlinear-search"
+                        aria-label="해 탐색 방식"
+                        value={nonlinearSearch}
+                        onChange={(e) =>
+                          setProject((p) => ({
+                            ...p,
+                            nonlinearSearch: e.target.value as
+                              | 'auto'
+                              | 'manual',
+                            selectedSolution: 0,
+                          }))
+                        }
+                      >
+                        <option value="auto">자동으로 여러 실수 해 찾기</option>
+                        <option value="manual">초기 조건으로 한 해 찾기</option>
+                      </select>
+                      {automatic ? (
+                        <SearchBoundsEditor
+                          bounds={project.searchBounds}
+                          onApply={(bounds) =>
+                            setProject((p) => ({
+                              ...p,
+                              searchBounds: bounds,
+                              selectedSolution: 0,
+                            }))
+                          }
+                        />
+                      ) : (
+                        <p>
+                          f(x)=잔차식과 x(min)·x(max), 또는 연립식의 각 x(0)을
+                          수식에 적어 주세요. 명시식 계산도 이 방식에서
+                          지원합니다.
+                        </p>
+                      )}
+                    </div>
+                  </details>
+                )}
+                {automatic &&
+                  /^\s*[A-Za-z][A-Za-z0-9_]*\(\s*(min|max|0)\s*\)\s*=/m.test(
+                    project.source,
+                  ) && (
+                    <p className="legacy-conditions-note">
+                      자동 모드에서는 수식에 적힌 초기값·구간 대신 자동 탐색
+                      설정을 사용합니다. 기존 조건으로 풀려면 고급 설정에서
+                      방식을 바꾸세요.
+                    </p>
+                  )}
                 <div className="model-run-row">
                   <span>
                     <span className="keycap">⌘</span> / Ctrl + Enter
@@ -928,7 +1081,9 @@ export default function App() {
                   <b>작은 변화가 만드는 새로운 발견</b>
                   <span>
                     {nonlinear
-                      ? '구간이나 초기값을 바꿔 다른 해가 존재하는지 살펴보세요.'
+                      ? automatic
+                        ? '발견한 실수 해를 선택해 각 해의 리포트와 변화를 비교하세요.'
+                        : '구간이나 초기값을 바꿔 다른 해가 존재하는지 살펴보세요.'
                       : '수식 속 상수를 파라미터로 등록해 해의 변화를 탐색해 보세요.'}
                   </span>
                 </p>
@@ -1000,6 +1155,7 @@ export default function App() {
                         : '수식을 한 번 확인해 주세요.'}
                     </h3>
                     <p>{error}</p>
+                    {searchInfo && <SearchCoverage search={searchInfo} />}
                     <button
                       className="secondary-button"
                       onClick={() => {
@@ -1021,7 +1177,9 @@ export default function App() {
                     <h3>모델을 입력하면 해석을 시작합니다.</h3>
                     <p>
                       {nonlinear
-                        ? '단일근은 탐색 구간을, 연립방정식은 초기 추정값을 함께 적어 주세요.'
+                        ? automatic
+                          ? '방정식을 그대로 입력하면 실수 해를 자동으로 탐색합니다. 초기값이나 구간을 입력하지 않아도 됩니다.'
+                          : '단일근은 탐색 구간을, 연립방정식은 초기 추정값을 함께 적어 주세요.'
                         : '한 줄에 방정식 하나를 입력하세요. 알려진 값은 파라미터로 등록할 수 있습니다.'}
                     </p>
                     {nonlinear && (
@@ -1044,6 +1202,50 @@ export default function App() {
                   </div>
                 ) : (
                   <>
+                    {automatic && (
+                      <section className="solutions-section">
+                        <div className="solutions-title">
+                          <h3 className="solution-count">
+                            발견한 실수 해 {solutions.length}개
+                          </h3>
+                          <span>해를 선택해 결과를 비교하세요</span>
+                        </div>
+                        <div
+                          className="solution-list"
+                          aria-label="발견한 실수 해"
+                        >
+                          {solutions.map((item, i) => (
+                            <button
+                              key={i}
+                              className={`solution-choice ${(payload?.selectedSolution ?? solutionIndex) === i ? 'selected' : ''}`}
+                              aria-pressed={
+                                (payload?.selectedSolution ?? solutionIndex) ===
+                                i
+                              }
+                              aria-label={`해 ${i + 1} ${item.variables.map((name, j) => `${name} ${fmt(item.values[j], 10)}`).join(' ')}`}
+                              disabled={pending}
+                              onClick={() =>
+                                setProject((p) => ({
+                                  ...p,
+                                  selectedSolution: i,
+                                }))
+                              }
+                            >
+                              <span>해 {i + 1}</span>
+                              <strong>
+                                {item.variables
+                                  .map(
+                                    (name, j) =>
+                                      `${name} = ${fmt(item.values[j], 10)}`,
+                                  )
+                                  .join(' · ')}
+                              </strong>
+                            </button>
+                          ))}
+                        </div>
+                        {searchInfo && <SearchCoverage search={searchInfo} />}
+                      </section>
+                    )}
                     <div className="solution-summary">
                       <div className="summary-label">
                         <span className="found-badge">
@@ -1051,7 +1253,9 @@ export default function App() {
                           {nonlinear
                             ? evaluation
                               ? '계산 완료'
-                              : '수렴'
+                              : automatic
+                                ? `해 ${(payload?.selectedSolution ?? solutionIndex) + 1}`
+                                : '수렴'
                             : '유일해'}
                         </span>
                         <span>
@@ -1061,7 +1265,7 @@ export default function App() {
                         </span>
                       </div>
                       <div
-                        className={`solution-cards ${result.variables.length > 3 ? 'many-values' : ''}`}
+                        className={`solution-cards ${result.variables.length > 3 ? 'many-values' : ''} ${result.variables.length === 1 ? 'single-value' : ''}`}
                       >
                         {result.variables.map((v, i) => (
                           <div className="solution-value" key={v}>
@@ -1097,7 +1301,9 @@ export default function App() {
                         <p>
                           {evaluation
                             ? '명시식을 계산한 결과입니다.'
-                            : '초기값·탐색 구간에 따라 다른 해에 수렴할 수 있습니다. 이 결과가 전체 해의 유일성을 뜻하지는 않습니다.'}
+                            : automatic
+                              ? '현재 선택한 실수 해의 결과입니다. 발견하지 못한 해가 더 존재할 수 있습니다.'
+                              : '초기값·탐색 구간에 따라 다른 해에 수렴할 수 있습니다. 이 결과가 전체 해의 유일성을 뜻하지는 않습니다.'}
                         </p>
                       </div>
                     )}
@@ -1179,8 +1385,9 @@ export default function App() {
                               />
                               {nonlinear && (
                                 <p className="nonlinear-sweep-note">
-                                  각 지점은 같은 초기값·구간으로 다시 풉니다.
-                                  모든 해를 추적하는 그래프는 아닙니다.
+                                  {automatic
+                                    ? '선택한 해에서 이어지는 가지를 수치적으로 추적합니다. 가지가 끝나거나 추적에 실패한 지점은 빈 값으로 표시됩니다.'
+                                    : '각 지점은 같은 초기값·구간으로 다시 풉니다. 모든 해를 추적하는 그래프는 아닙니다.'}
                                 </p>
                               )}
                               <p className="chart-footnote">
@@ -1291,6 +1498,17 @@ export default function App() {
                             리포트 저장
                           </button>
                         </div>
+                        {automatic && solutions.length > 1 && (
+                          <button
+                            className="all-reports-button"
+                            disabled={pending}
+                            onClick={exportAllReports}
+                          >
+                            <Download size={14} />
+                            모든 해 리포트 저장
+                            <span>{solutions.length}개 해</span>
+                          </button>
+                        )}
                         {!evaluation && (
                           <div className="condition-controls">
                             <div>
@@ -1914,5 +2132,92 @@ function ParameterValueInput({
         }
       }}
     />
+  )
+}
+
+function SearchCoverage({ search }: { search: SearchSummary }) {
+  return (
+    <div className="search-summary">
+      <div>
+        <span>{search.method}</span>
+        <strong>
+          탐색 범위 {String(search.min)} ~ {String(search.max)}
+        </strong>
+      </div>
+      <p>{search.note}</p>
+    </div>
+  )
+}
+function SearchBoundsEditor({
+  bounds,
+  onApply,
+}: {
+  bounds?: { min: number; max: number }
+  onApply: (bounds: { min: number; max: number } | undefined) => void
+}) {
+  const [min, setMin] = useState(bounds ? String(bounds.min) : '')
+  const [max, setMax] = useState(bounds ? String(bounds.max) : '')
+  const [error, setError] = useState('')
+  useEffect(() => {
+    setMin(bounds ? String(bounds.min) : '')
+    setMax(bounds ? String(bounds.max) : '')
+    setError('')
+  }, [bounds?.min, bounds?.max])
+  return (
+    <form
+      className="search-bounds-form"
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (!min.trim() && !max.trim()) {
+          onApply(undefined)
+          setError('')
+          return
+        }
+        const a = Number(min),
+          b = Number(max)
+        if (
+          !min.trim() ||
+          !max.trim() ||
+          ![a, b, b - a].every(Number.isFinite) ||
+          a >= b
+        ) {
+          setError('최솟값보다 큰 유한한 최댓값을 입력하세요.')
+          return
+        }
+        onApply({ min: a, max: b })
+        setError('')
+      }}
+    >
+      <p>
+        범위는 선택 사항입니다. 비워 두면 자동 범위를 사용합니다. 더 넓거나 좁은
+        영역이 필요할 때 지정하세요.
+      </p>
+      <div>
+        <label>
+          최솟값
+          <input
+            aria-label="자동 탐색 최솟값"
+            type="number"
+            step="any"
+            value={min}
+            placeholder="자동"
+            onChange={(e) => setMin(e.target.value)}
+          />
+        </label>
+        <label>
+          최댓값
+          <input
+            aria-label="자동 탐색 최댓값"
+            type="number"
+            step="any"
+            value={max}
+            placeholder="자동"
+            onChange={(e) => setMax(e.target.value)}
+          />
+        </label>
+        <button type="submit">범위 적용</button>
+      </div>
+      {error && <span role="alert">{error}</span>}
+    </form>
   )
 }

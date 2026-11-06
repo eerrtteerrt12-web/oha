@@ -43,7 +43,18 @@ export type SweepPoint = {
   values: number[] | null
   error?: string
 }
+export type SearchSummary = {
+  method: string
+  min: number
+  max: number
+  attempts: number
+  note: string
+  truncated?: boolean
+}
 export type SolvePayload = {
+  solutions?: SolveResult[]
+  selectedSolution?: number
+  search?: SearchSummary
   result: SolveResult
   sweep: SweepPoint[]
   dataset: SweepPoint[]
